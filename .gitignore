@@ -29,3 +29,19 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Home directory dotfiles & system folders
+.bash_history
+.bash_logout
+.bashrc
+.profile
+.lesshst
+.wget-hsts
+.sudo_as_admin_successful
+.cache/
+.config/
+.dotnet/
+.vscode-server/
+.claude/
+.claude.json
+.copilot/
