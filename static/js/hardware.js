@@ -118,13 +118,61 @@ async function refreshHardwareStatus() {
 window.runI2CScan = runI2CScan;
 window.refreshHardwareStatus = refreshHardwareStatus;
 
+async function refreshThesisStatus() {
+    try {
+        const res = await fetch('/api/thesis/status');
+        const data = await res.json();
+        const btn = document.getElementById('thesisToggleBtn');
+        const msg = document.getElementById('thesisMessage');
+        if (!btn) return;
+        if (data.running) {
+            btn.textContent = 'Stop Thesis Dashboard';
+            btn.className = 'btn secondary';
+            msg.textContent = `Running (PID ${data.pid}). Access at port 5002.`;
+        } else {
+            btn.textContent = 'Start Thesis Dashboard';
+            btn.className = 'btn';
+            msg.textContent = 'Thesis dashboard is not running.';
+        }
+        btn.disabled = false;
+    } catch (err) {
+        const msg = document.getElementById('thesisMessage');
+        if (msg) msg.textContent = `Status error: ${err}`;
+    }
+}
+
+async function toggleThesisDashboard() {
+    const btn = document.getElementById('thesisToggleBtn');
+    const msg = document.getElementById('thesisMessage');
+    btn.disabled = true;
+    try {
+        const statusRes = await fetch('/api/thesis/status');
+        const statusData = await statusRes.json();
+        const endpoint = statusData.running ? '/api/thesis/stop' : '/api/thesis/start';
+        msg.textContent = statusData.running ? 'Stopping...' : 'Starting...';
+        const res = await fetch(endpoint, { method: 'POST' });
+        const data = await res.json();
+        msg.textContent = data.message || data.error || 'Done.';
+    } catch (err) {
+        msg.textContent = `Error: ${err}`;
+    }
+    await refreshThesisStatus();
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
     const safeShutdownBtn = document.getElementById('safeShutdownBtn');
     if (safeShutdownBtn) {
         safeShutdownBtn.addEventListener('click', requestSafeShutdown);
     }
 
+    const thesisBtn = document.getElementById('thesisToggleBtn');
+    if (thesisBtn) {
+        thesisBtn.addEventListener('click', toggleThesisDashboard);
+    }
+
     await refreshHardwareStatus();
     await runI2CScan();
+    await refreshThesisStatus();
     setInterval(refreshHardwareStatus, 8000);
+    setInterval(refreshThesisStatus, 8000);
 });

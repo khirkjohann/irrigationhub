@@ -20,10 +20,10 @@
 
   HARDWARE MAP (matches main app):
     ADS1115 @ I2C 0x48:
-      A0 → SEN0308 #1    (Zone 1 — Heavy-Duty comparative sensor A)
+      A0 → Generic v1.2  (Zone 1 — Low-cost control sensor)
       A1 → SEN0308 #2    (Zone 2 — Heavy-Duty comparative sensor B)
-      A2 → SEN0193       (Zone 3 — Premium capacitive sensor)
-      A3 → Generic v1.2  (Zone 4 — Low-cost control sensor)
+      A2 → SEN0308 #1    (Zone 3 — Heavy-Duty comparative sensor A)
+      A3 → SEN0193       (Zone 4 — Premium capacitive sensor)
 
     BME280  @ I2C 0x76 (or 0x77 auto-fallback)
       → Temperature (°C) and Relative Humidity (%)
@@ -85,10 +85,10 @@ ML_MODEL_PATH = os.getenv("THESIS_ML_MODEL", "/home/pi/irrigation_model.joblib")
 
 # Human-readable name for each ADS1115 channel — used in tables & chart legend.
 CHANNEL_LABELS = {
-    0: "SEN0308 #1",    # Heavy-duty comparative sensor A
-    1: "SEN0308 #2",    # Heavy-duty comparative sensor B
-    2: "SEN0193",       # Premium capacitive sensor
-    3: "Generic v1.2",  # Low-cost control / baseline sensor
+    0: "Generic v1.2",  # Low-cost control / baseline sensor (Zone 1)
+    1: "SEN0308 #2",    # Heavy-duty comparative sensor B (Zone 2)
+    2: "SEN0308 #1",    # Heavy-duty comparative sensor A (Zone 3)
+    3: "SEN0193",       # Premium capacitive sensor (Zone 4)
 }
 
 ADS_I2C_ADDRESS   = 0x48          # Single ADS1115 on the I2C bus
@@ -129,10 +129,10 @@ RELAY_ACTIVE_LOW = os.getenv("IRRIGATION_RELAY_ACTIVE_LOW", "1") == "1"
 
 # One sensor per zone — each ADS1115 channel maps to its own valve.
 CHANNEL_VALVE_MAP = {
-    0: "valve1",   # SEN0308 #1  → Zone 1 (BCM 17)
+    0: "valve1",   # Generic v1.2 → Zone 1 (BCM 17)
     1: "valve2",   # SEN0308 #2  → Zone 2 (BCM 27)
-    2: "valve3",   # SEN0193     → Zone 3 (BCM 22)
-    3: "valve4",   # Generic     → Zone 4 (BCM 23)
+    2: "valve3",   # SEN0308 #1  → Zone 3 (BCM 22)
+    3: "valve4",   # SEN0193     → Zone 4 (BCM 23)
 }
 
 

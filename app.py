@@ -4,8 +4,8 @@ Port 5000  (User Dashboard)
 Port 5001  (Logs Viewer)
 
 Hardware:
-  ADS1115 @ I2C 0x48  →  A0=Zone1 (SEN0308 #1), A1=Zone2 (SEN0308 #2),
-                          A2=Zone3 (SEN0193),     A3=Zone4 (Generic v1.2)
+  ADS1115 @ I2C 0x48  →  A0=Zone1 (Generic v1.2), A1=Zone2 (SEN0308 #2),
+                          A2=Zone3 (SEN0308 #1),  A3=Zone4 (SEN0193)
   BME280  @ I2C 0x76/0x77  →  Temperature, Humidity
   GPIO (BCM): 17=Valve1, 27=Valve2, 22=Valve3, 23=Valve4
   Pump SSR fired automatically via hardware diode interlock.
@@ -41,6 +41,10 @@ BME280_ADDRESSES       = (0x76, 0x77)
 REQUIRED_ADS_ADDRESSES = {0x48}
 ADS_SAMPLES            = 10      # averages per channel read
 ADS_SAMPLE_DELAY       = 0.05    # seconds between samples
+
+# Zone → ADS1115 channel (0=A0 … 3=A3)
+# Zone1=Generic(A0), Zone2=SEN0308#2(A1), Zone3=SEN0308#1(A2), Zone4=SEN0193(A3)
+ZONE_ADS_CHANNEL = {1: 0, 2: 1, 3: 2, 4: 3}
 
 # Auto-control
 AUTO_CONTROL_ENABLED  = os.getenv("IRRIGATION_ENABLE_AUTO_CONTROL", "1") == "1"
@@ -149,7 +153,7 @@ def initialize_db():
             target_voltage REAL    NOT NULL,
             created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE IF NOT EXISTS testing_lock (
+         CREATE TABLE IF NOT EXISTS testing_lock (
             zone_id      INTEGER PRIMARY KEY,
             locked_until DATETIME NOT NULL
         );
@@ -406,11 +410,11 @@ def read_hardware():
             missing.append("BME280@0x76/0x77")
             _set_sensor_component("bme280", False, "BME280 not found at 0x76 or 0x77")
 
-        # ADS1115 — one zone per channel (0=Zone1 … 3=Zone4)
+        # ADS1115 — channel per zone (see ZONE_ADS_CHANNEL mapping)
         try:
             ads = ADS.ADS1115(i2c, address=0x48)
             for zone_id in VALID_ZONES:
-                ch = zone_id - 1
+                ch = ZONE_ADS_CHANNEL[zone_id]
                 # Discard first read — ADS MUX settling artefact.
                 _ = AnalogIn(ads, ch).voltage
                 time.sleep(0.02)
@@ -1090,6 +1094,62 @@ def api_shutdown():
         except Exception:
             pass
     return jsonify({"error": "Shutdown command failed"}), 500
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Thesis Dashboard process management
+# ─────────────────────────────────────────────────────────────────────────────
+
+_THESIS_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thesis_dashboard.py")
+_THESIS_PYTHON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "irrigation_env", "bin", "python")
+
+
+def _thesis_pid():
+    """Return PID of a running thesis_dashboard.py process, or None."""
+    try:
+        out = subprocess.check_output(["pgrep", "-f", "thesis_dashboard.py"], text=True).strip()
+        own = os.getpid()
+        pids = [int(p) for p in out.splitlines() if p.strip() and int(p) != own]
+        return pids[0] if pids else None
+    except subprocess.CalledProcessError:
+        return None
+
+
+@app.route("/api/thesis/status")
+def api_thesis_status():
+    pid = _thesis_pid()
+    return jsonify({"running": pid is not None, "pid": pid})
+
+
+@app.route("/api/thesis/start", methods=["POST"])
+def api_thesis_start():
+    if _thesis_pid():
+        return jsonify({"success": True, "message": "Thesis dashboard is already running."})
+    try:
+        subprocess.Popen(
+            [_THESIS_PYTHON, _THESIS_SCRIPT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        time.sleep(1.5)
+        pid = _thesis_pid()
+        if pid:
+            return jsonify({"success": True, "message": f"Thesis dashboard started (PID {pid})."})
+        return jsonify({"error": "Process launched but not detected — check thesis_dashboard.py for errors."}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/thesis/stop", methods=["POST"])
+def api_thesis_stop():
+    pid = _thesis_pid()
+    if not pid:
+        return jsonify({"success": True, "message": "Thesis dashboard is not running."})
+    try:
+        subprocess.run(["kill", str(pid)], check=True)
+        return jsonify({"success": True, "message": f"Thesis dashboard stopped (PID {pid})."})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Logs viewer app (port 5001)

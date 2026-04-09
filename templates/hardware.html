@@ -66,6 +66,15 @@
         <div class="meta-row"><span>Message</span><strong id="relayMessage">--</strong></div>
     </div>
 </section>
+
+<section class="card">
+    <h2>Thesis Dashboard (Port 5002)</h2>
+    <p class="small-text">Start or stop the standalone thesis testing &amp; diagnostics server. Do not run GPIO-intensive tests while the main app is actively controlling valves.</p>
+    <div class="actions">
+        <button class="btn" id="thesisToggleBtn" type="button" disabled>Loading...</button>
+    </div>
+    <p class="small-text" id="thesisMessage">Checking status...</p>
+</section>
 {% endblock %}
 
 {% block scripts %}
