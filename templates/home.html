@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+
+{% block title %}Home | Irrigation Hub{% endblock %}
+
+{% block content %}
+<section class="home-hero card">
+    <div>
+        <p class="eyebrow">Farm Control Center</p>
+        <h1 class="home-title">Irrigation Home</h1>
+        <p class="hero-subtitle">Live weather, sensor health, and quick valve control for all zones in one view.</p>
+    </div>
+    <div class="hero-status-wrap">
+        <span id="sensorInputsStatus" class="hero-status-pill">Checking inputs...</span>
+        <p id="sensorInputsError" class="hero-status-help">Waiting for latest poll...</p>
+    </div>
+</section>
+
+<section class="card">
+    <h2>System Overview</h2>
+    <div class="overview-grid">
+        <div class="overview-item">
+            <p class="overview-label">Temperature</p>
+            <p id="tempValue" class="overview-value">-- C</p>
+        </div>
+        <div class="overview-item">
+            <p class="overview-label">Humidity</p>
+            <p id="humidityValue" class="overview-value">-- %</p>
+        </div>
+        <div class="overview-item">
+            <p class="overview-label">Hotspot</p>
+            <p id="hotspotStatus" class="overview-value">--</p>
+        </div>
+        <div class="overview-item">
+            <p class="overview-label">App Uptime</p>
+            <p id="dbUptime" class="overview-value">--</p>
+        </div>
+    </div>
+</section>
+
+<section class="card zone-management-card">
+    <div class="zone-head">
+        <h2>Zone Management</h2>
+        <p class="small-text">One sensor per zone. Disable a zone to ignore its input and skip auto-control decisions.</p>
+    </div>
+    <div id="homeZonesGrid" class="home-zones-grid"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/home.js') }}" defer></script>
+{% endblock %}

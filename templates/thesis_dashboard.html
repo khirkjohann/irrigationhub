@@ -1,0 +1,1763 @@
+<!DOCTYPE html>
+<!--
+  =============================================================================
+    Thesis Testing & Diagnostics Dashboard  —  index (thesis_dashboard.html)
+    Served by:  thesis_dashboard.py  on  http://irrigation-hub.local:5002
+  =============================================================================
+  LAYOUT  (single Bootstrap 5 page, no separate CSS/JS files):
+    Row 1:  Panel 1 — Calibration       |  Panel 2 — Hardware Stress Test
+    Row 2:  Panel 3 — Relay Override    |  Panel 4 — ML Volumetric Test
+
+  EXTERNAL CDN RESOURCES (requires internet on first load; cached thereafter):
+    • Bootstrap 5.3    — layout, grid, badges, buttons
+    • Chart.js 4.4     — real-time multi-line sensor graph
+    • Bootstrap Icons  — UI glyphs
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thesis Diagnostics Dashboard</title>
+
+  <!-- Bootstrap 5 -->
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
+  <style>
+    /* ── Typography & base ─────────────────────────────────────────────── */
+    :root {
+      --accent:   #0d6efd;
+      --success:  #198754;
+      --warning:  #ffc107;
+      --danger:   #dc3545;
+      --dark:     #212529;
+      --muted:    #6c757d;
+      /* Chart colours (one per sensor channel) */
+      --c0: #e74c3c;   /* SEN0308 #1  — red        */
+      --c1: #3498db;   /* SEN0308 #2  — blue       */
+      --c2: #2ecc71;   /* SEN0193     — green      */
+      --c3: #f39c12;   /* Generic v1.2 — orange    */
+    }
+    body {
+      background: #f0f2f5;
+      font-size: 0.9rem;
+    }
+    h6.panel-title {
+      font-size: 0.7rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0;
+    }
+    .card { border: none; box-shadow: 0 1px 6px rgba(0,0,0,.10); }
+    .card-header { background: #fff; border-bottom: 2px solid #e9ecef; }
+
+    /* ── Connection status pill ─────────────────────────────────────────── */
+    #conn-badge { font-size: .75rem; transition: background .4s; }
+
+    /* ── Calibration table ──────────────────────────────────────────────── */
+    .calib-table th, .calib-table td { vertical-align: middle; font-size: .82rem; }
+    .volt-cell  { font-variant-numeric: tabular-nums; font-family: monospace; }
+    .pct-cell   { font-weight: 600; }
+    /* Colour-coded dot per channel */
+    .dot-0 { color: var(--c0); }
+    .dot-1 { color: var(--c1); }
+    .dot-2 { color: var(--c2); }
+    .dot-3 { color: var(--c3); }
+
+    /* ── Big live voltage numbers ───────────────────────────────────────── */
+    .live-volt {
+      font-size: 1.4rem;
+      font-family: monospace;
+      font-weight: 700;
+    }
+
+    /* ── Relay status badges ────────────────────────────────────────────── */
+    .relay-badge {
+      font-size: .75rem;
+      min-width: 4.5rem;
+      text-align: center;
+    }
+
+    /* ── ML disabled overlay (greyed-out Panel 4 when ML mode is off) ───── */
+    .ml-disabled-overlay {
+      opacity: 0.4;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* ── ML result box ──────────────────────────────────────────────────── */
+    #ml-result-box {
+      background: #e9f5ee;
+      border-left: 4px solid var(--success);
+      border-radius: 4px;
+      display: none;
+    }
+    .ml-big { font-size: 1.6rem; font-weight: 700; color: var(--success); }
+
+    /* ── Chart container ────────────────────────────────────────────────── */
+    #chart-container { position: relative; height: 260px; }
+
+    /* ── Mode toggle switch ─────────────────────────────────────────────── */
+    .mode-label { font-size: .8rem; font-weight: 600; }
+
+    /* ── Failsafe countdown pill ────────────────────────────────────────── */
+    .fs-badge { font-size: .7rem; }
+
+    /* ── Toast stack ────────────────────────────────────────────────────── */
+    .toast-container { z-index: 1090; }
+
+    /* ── Active test chart card highlight ──────────────────────────────── */
+    .test-card-active {
+      border-color: #0d6efd !important;
+      box-shadow: 0 0 0 3px rgba(13,110,253,.20);
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ════════════════════════════════════════════════════════════════════
+       TOP NAVIGATION BAR
+  ════════════════════════════════════════════════════════════════════════ -->
+  <nav class="navbar navbar-dark bg-dark px-3 py-2 mb-3">
+    <span class="navbar-brand fw-bold mb-0 h5">
+      <i class="bi bi-moisture me-2"></i>Thesis Testing &amp; Diagnostics
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <!-- Live sensor error indicator -->
+      <small id="hw-error-text" class="text-warning d-none"></small>
+      <!-- SSE connection status -->
+      <span id="conn-badge" class="badge bg-secondary" id="conn-badge">
+        <i class="bi bi-wifi-off me-1"></i>Connecting…
+      </span>
+      <!-- BME280 readings shown in navbar -->
+      <span class="text-white-50 small">
+        <i class="bi bi-thermometer-half"></i>
+        <span id="nav-temp">—</span>&nbsp;°C
+        &nbsp;|&nbsp;
+        <i class="bi bi-droplet-half"></i>
+        <span id="nav-hum">—</span>&nbsp;%
+      </span>
+    </div>
+  </nav>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       MAIN GRID  (two columns on ≥ lg screens, stacked on mobile)
+  ════════════════════════════════════════════════════════════════════════ -->
+  <div class="container-fluid px-3">
+    <div class="row g-3">
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 1 — CALIBRATION    (For Table 3)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <div>
+              <h6 class="panel-title">Panel 1 — Calibration</h6>
+              <span class="fw-semibold">Raw Voltage &amp; Baseline Capture</span>
+              <span class="badge bg-info text-dark ms-2">For Table 3</span>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshSensors()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+          <div class="card-body p-2">
+
+            <!--
+              CALIBRATION TABLE
+              Each row = one ADS1115 channel / sensor.
+              Columns: Sensor label | Live Voltage | Calibrated % |
+                       Saved Dry | Saved Wet | Capture buttons | Reset | Synced
+            -->
+            <table class="table table-sm table-hover calib-table mb-2">
+              <thead class="table-light">
+                <tr>
+                  <th>Sensor</th>
+                  <th>Live V</th>
+                  <th>Cal %</th>
+                  <th>Dry V</th>
+                  <th>Wet V</th>
+                  <th colspan="3">Actions</th>
+                  <th title="Synced to main app zone settings">Synced</th>
+                </tr>
+              </thead>
+              <tbody id="calib-tbody">
+                <!-- Rows injected by renderCalibTable() -->
+              </tbody>
+            </table>
+
+            <div class="d-flex gap-2 align-items-center flex-wrap">
+              <button class="btn btn-sm btn-outline-danger" onclick="resetAllCalib()">
+                <i class="bi bi-trash3"></i> Reset All Baselines
+              </button>
+              <button class="btn btn-sm btn-success" onclick="syncAllToMain()">
+                <i class="bi bi-arrow-repeat"></i> Sync All to Zone Settings
+              </button>
+              <small class="text-muted">
+                Place sensor in <strong>bone-dry</strong> soil → Capture Dry.
+                Submerge in water → Capture Wet.
+                Once both are set, the baseline is automatically pushed to
+                <strong>Zone Settings</strong> on the main app.
+              </small>
+            </div>
+          </div>
+        </div>
+      </div><!-- /Panel 1 -->
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 3 — RELAY & QUEUE OVERRIDE    (For Table 1)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-lg-6">
+        <div class="card h-100">
+          <div class="card-header">
+            <h6 class="panel-title">Panel 3 — Relay &amp; Queue Override</h6>
+            <span class="fw-semibold">Manual Control · Failsafe Timer · Sequential Queue</span>
+            <span class="badge bg-info text-dark ms-2">For Table 1</span>
+          </div>
+          <div class="card-body p-3">
+
+            <!--
+              FAILSAFE TIMER INPUT
+              This single timer value is applied to any valve that is turned ON.
+              Set to 0 (or clear) to run indefinitely.
+            -->
+            <div class="row g-2 mb-3 align-items-end">
+              <div class="col-auto">
+                <label class="form-label fw-semibold mb-1">
+                  <i class="bi bi-clock-history me-1"></i>Failsafe Timer
+                </label>
+                <div class="input-group input-group-sm" style="width:160px">
+                  <input type="number" id="failsafe-input" class="form-control"
+                         placeholder="e.g. 5" min="0" step="0.5"
+                         title="Auto-close valve after this many minutes (0 = no timer)">
+                  <span class="input-group-text">min</span>
+                </div>
+              </div>
+              <div class="col">
+                <small class="text-muted">
+                  Enter a value before pressing <strong>ON</strong>.
+                  Leave blank or 0 for no auto-close.
+                </small>
+              </div>
+            </div>
+
+            <!--
+              RELAY CONTROL ROWS
+              One row per controllable relay.  State badge + ON/OFF buttons.
+            -->
+            <div id="relay-rows">
+              <!-- Rows injected by renderRelayPanel() -->
+            </div>
+
+            <!--
+              QUEUE VISUALISER
+              Shows which valves are waiting to run.  Demonstrates the
+              sequential irrigation logic that prevents pressure drops.
+            -->
+            <div class="mt-3 p-2 rounded bg-light border">
+              <strong><i class="bi bi-list-ol me-1"></i>Valve Queue</strong>
+              <div id="queue-display" class="mt-1">
+                <em class="text-muted">Queue is empty</em>
+              </div>
+              <small class="text-muted d-block mt-1">
+                When a valve is requested while another is active, it waits here
+                until the active valve closes (manual or failsafe).
+              </small>
+            </div>
+
+            <!--
+              PUMP AUTO-ON INDICATOR
+              Pump is wired in series with a diode; it fires automatically whenever
+              any valve relay is energised — no manual control needed or shown.
+            -->
+            <div class="mt-2 p-2 rounded border" id="pump-auto-indicator">
+              <i class="bi bi-lightning text-muted me-1"></i>
+              <span class="text-muted">Pump OFF (starts automatically with any valve)</span>
+            </div>
+
+            <!--
+              GPIO AVAILABILITY INDICATOR
+              Shows if physical relay control is active or in simulation mode.
+            -->
+            <div class="mt-2">
+              <small id="gpio-status" class="text-muted">
+                <i class="bi bi-cpu me-1"></i>GPIO status: checking…
+              </small>
+            </div>
+
+          </div>
+        </div>
+      </div><!-- /Panel 3 -->
+
+    </div><!-- /row 1: Calibration + Relay Override -->
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         ROW 2 — PANEL 2 — SENSOR RELIABILITY TEST (full width)
+         5-minute step-response test: 2 min watering + 3 min monitoring.
+         One chart per sensor, each run independently per zone.
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div class="row g-3 mt-3">
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 2 — SENSOR RELIABILITY TEST    (For Table 5)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <div>
+              <h6 class="panel-title mb-0">Panel 2 — Sensor Reliability Test</h6>
+              <span class="fw-semibold text-muted small">
+                2 min watering → 3 min monitoring · 5 s poll · one zone at a time
+              </span>
+              <span class="badge bg-info text-dark ms-2">For Table 5</span>
+            </div>
+
+            <!-- Zone test controls — one button per zone, run separately -->
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <button id="btn-z1-test" class="btn btn-sm btn-primary"
+                      onclick="startZoneTest('valve1')">
+                <i class="bi bi-play-fill me-1"></i>Zone 1
+              </button>
+              <button id="btn-z2-test" class="btn btn-sm btn-warning"
+                      onclick="startZoneTest('valve2')">
+                <i class="bi bi-play-fill me-1"></i>Zone 2
+              </button>
+              <button id="btn-z3-test" class="btn btn-sm btn-success"
+                      onclick="startZoneTest('valve3')">
+                <i class="bi bi-play-fill me-1"></i>Zone 3
+              </button>
+              <button id="btn-z4-test" class="btn btn-sm btn-info text-white"
+                      onclick="startZoneTest('valve4')">
+                <i class="bi bi-play-fill me-1"></i>Zone 4
+              </button>
+              <button id="btn-stop-test" class="btn btn-danger btn-sm d-none"
+                      onclick="stopZoneTest()">
+                <i class="bi bi-stop-fill me-1"></i>Stop
+              </button>
+              <span id="test-header-badge" class="badge bg-secondary">Idle</span>
+              <span id="test-timer-hdr" class="text-muted small fw-semibold"></span>
+            </div>
+          </div>
+
+          <div class="card-body p-3">
+
+            <!-- Progress bar (hidden until test starts) -->
+            <div id="test-progress-wrap" class="mb-3" style="display:none">
+              <div class="d-flex justify-content-between small text-muted mb-1">
+                <span id="test-phase-label">—</span>
+                <span id="test-time-label">0:00 / 5:00</span>
+              </div>
+              <div class="progress" style="height:8px">
+                <div id="test-progress-bar"
+                     class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                     style="width:0%"></div>
+              </div>
+            </div>
+
+            <!-- 2×2 chart grid — one card per sensor / zone -->
+            <div class="row g-3">
+
+              <!-- A0 — SEN0308 #1 — Zone 1 -->
+              <div class="col-md-6">
+                <div class="border rounded p-2 h-100">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="fw-semibold small">
+                      <span style="color:var(--c0)">●</span>
+                      A0 &nbsp;·&nbsp; SEN0308 #1
+                    </span>
+                    <span class="badge bg-primary" style="font-size:.7rem">Zone 1 · Valve 1</span>
+                  </div>
+                  <div style="position:relative;height:200px">
+                    <canvas id="testChart0"></canvas>
+                  </div>
+                  <div id="testStatus0" class="text-muted small text-center mt-1">
+                    Press <strong>Zone 1</strong> to begin
+                  </div>
+                </div>
+              </div>
+
+              <!-- A1 — SEN0308 #2 — Zone 2 -->
+              <div class="col-md-6">
+                <div class="border rounded p-2 h-100">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="fw-semibold small">
+                      <span style="color:var(--c1)">●</span>
+                      A1 &nbsp;·&nbsp; SEN0308 #2
+                    </span>
+                    <span class="badge bg-warning text-dark" style="font-size:.7rem">Zone 2 · Valve 2</span>
+                  </div>
+                  <div style="position:relative;height:200px">
+                    <canvas id="testChart1"></canvas>
+                  </div>
+                  <div id="testStatus1" class="text-muted small text-center mt-1">
+                    Press <strong>Zone 2</strong> to begin
+                  </div>
+                </div>
+              </div>
+
+              <!-- A2 — SEN0193 — Zone 3 -->
+              <div class="col-md-6">
+                <div class="border rounded p-2 h-100">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="fw-semibold small">
+                      <span style="color:var(--c2)">●</span>
+                      A2 &nbsp;·&nbsp; SEN0193
+                    </span>
+                    <span class="badge bg-success" style="font-size:.7rem">Zone 3 · Valve 3</span>
+                  </div>
+                  <div style="position:relative;height:200px">
+                    <canvas id="testChart2"></canvas>
+                  </div>
+                  <div id="testStatus2" class="text-muted small text-center mt-1">
+                    Press <strong>Zone 3</strong> to begin
+                  </div>
+                </div>
+              </div>
+
+              <!-- A3 — Generic v1.2 — Zone 4 -->
+              <div class="col-md-6">
+                <div class="border rounded p-2 h-100">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="fw-semibold small">
+                      <span style="color:var(--c3)">●</span>
+                      A3 &nbsp;·&nbsp; Generic v1.2
+                    </span>
+                    <span class="badge bg-info text-white" style="font-size:.7rem">Zone 4 · Valve 4</span>
+                  </div>
+                  <div style="position:relative;height:200px">
+                    <canvas id="testChart3"></canvas>
+                  </div>
+                  <div id="testStatus3" class="text-muted small text-center mt-1">
+                    Press <strong>Zone 4</strong> to begin
+                  </div>
+                </div>
+              </div>
+
+            </div><!-- /chart grid -->
+
+            <!-- Phase legend -->
+            <div class="d-flex gap-4 justify-content-center mt-3 small text-muted">
+              <span>
+                <span style="display:inline-block;width:28px;height:12px;
+                             background:rgba(40,167,69,0.18);
+                             border:1.5px solid rgba(40,167,69,0.55);
+                             border-radius:3px;vertical-align:middle"></span>
+                &nbsp;Valve open (0–2 min)
+              </span>
+              <span>
+                <span style="display:inline-block;width:28px;height:12px;
+                             background:rgba(108,117,125,0.10);
+                             border:1.5px dashed rgba(108,117,125,0.45);
+                             border-radius:3px;vertical-align:middle"></span>
+                &nbsp;Monitoring (2–5 min)
+              </span>
+            </div>
+
+          </div>
+        </div>
+      </div><!-- /Panel 2 -->
+
+    </div><!-- /row 2: Sensor Reliability Test -->
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         ROW 3 — PANEL 4 — ML VOLUMETRIC TEST
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div class="row g-3 mt-3">
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 4 — ML VOLUMETRIC TEST    (For Table 2)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-lg-6">
+        <div class="card h-100">
+          <div class="card-header">
+            <h6 class="panel-title">Panel 4 — ML Volumetric Test</h6>
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+              <div>
+                <span class="fw-semibold">Regression Prediction · Volume · Duration</span>
+                <span class="badge bg-info text-dark ms-2">For Table 2</span>
+              </div>
+              <!-- ML mode toggle: disable during hardware/sensor tests to prevent relay interference -->
+              <div class="form-check form-switch mb-0 d-flex align-items-center gap-2">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="ml-mode-toggle" onchange="toggleMLMode(this.checked)"
+                       title="Disable during hardware tests to prevent relay interference">
+                <label class="form-check-label mode-label" for="ml-mode-toggle">ML Active</label>
+              </div>
+            </div>
+          </div>
+          <div class="card-body p-3" id="panel4-body">
+
+            <!--
+              MANUAL INPUT FIELDS
+              Type mock or real environmental readings to feed the model.
+              Clicking "Use Live" copies the current sensor data automatically.
+            -->
+            <div class="row g-3 mb-3">
+              <div class="col-6 col-sm-3">
+                <label class="form-label fw-semibold">
+                  <i class="bi bi-thermometer-half"></i> Temperature
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="ml-temp" class="form-control"
+                         placeholder="e.g. 30.5" step="0.1" min="-10" max="60">
+                  <span class="input-group-text">°C</span>
+                </div>
+              </div>
+              <div class="col-6 col-sm-3">
+                <label class="form-label fw-semibold">
+                  <i class="bi bi-droplet-half"></i> Humidity
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="ml-humid" class="form-control"
+                         placeholder="e.g. 65" step="0.1" min="0" max="100">
+                  <span class="input-group-text">%</span>
+                </div>
+              </div>
+              <div class="col-6 col-sm-3">
+                <label class="form-label fw-semibold">
+                  <i class="bi bi-moisture"></i> Current Moisture
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="ml-moisture" class="form-control"
+                         placeholder="e.g. 42" step="0.1" min="0" max="100">
+                  <span class="input-group-text">%</span>
+                </div>
+              </div>
+              <div class="col-6 col-sm-3">
+                <label class="form-label fw-semibold">
+                  <i class="bi bi-bullseye"></i> Target Moisture
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="ml-target-moisture" class="form-control"
+                         placeholder="e.g. 60" step="0.1" min="0" max="100" value="60">
+                  <span class="input-group-text">%</span>
+                </div>
+              </div>
+            </div>
+
+            <!--
+              PER-ZONE FLOW RATE INPUTS
+              Measured flow rate Q (L/min) for each zone valve.
+              Duration = Volume / Q  — set per zone based on your pump/pipe test.
+            -->
+            <div class="mb-3">
+              <label class="form-label fw-semibold">
+                <i class="bi bi-speedometer2"></i> Flow Rate Q (L / min) — per zone
+              </label>
+              <div class="row g-2 mb-2">
+                <div class="col-6 col-sm-3">
+                  <label class="form-label small text-muted mb-1">Zone 1</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" id="ml-flow-rate-1" class="form-control"
+                           step="0.01" min="0.1" max="100" value="3.0">
+                    <span class="input-group-text">L/min</span>
+                  </div>
+                </div>
+                <div class="col-6 col-sm-3">
+                  <label class="form-label small text-muted mb-1">Zone 2</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" id="ml-flow-rate-2" class="form-control"
+                           step="0.01" min="0.1" max="100" value="3.0">
+                    <span class="input-group-text">L/min</span>
+                  </div>
+                </div>
+                <div class="col-6 col-sm-3">
+                  <label class="form-label small text-muted mb-1">Zone 3</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" id="ml-flow-rate-3" class="form-control"
+                           step="0.01" min="0.1" max="100" value="3.0">
+                    <span class="input-group-text">L/min</span>
+                  </div>
+                </div>
+                <div class="col-6 col-sm-3">
+                  <label class="form-label small text-muted mb-1">Zone 4</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" id="ml-flow-rate-4" class="form-control"
+                           step="0.01" min="0.1" max="100" value="3.0">
+                    <span class="input-group-text">L/min</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Zone selector + Use Live button on same row -->
+              <div class="d-flex align-items-center gap-3 flex-wrap">
+                <div class="d-flex align-items-center gap-2">
+                  <label class="form-label mb-0 small fw-semibold">Predict for Zone:</label>
+                  <select id="ml-zone-select" class="form-select form-select-sm" style="width:auto;">
+                    <option value="1">Zone 1</option>
+                    <option value="2">Zone 2</option>
+                    <option value="3">Zone 3</option>
+                    <option value="4">Zone 4</option>
+                  </select>
+                </div>
+                <button class="btn btn-sm btn-outline-info" onclick="fillLiveData()" title="Copy current sensor readings into the input boxes">
+                  <i class="bi bi-arrow-down-circle me-1"></i>Use Live Readings
+                </button>
+              </div>
+            </div>
+            <!-- Hidden legacy element kept so loadConfig() doesn't break -->
+            <span id="ml-flow-rate" class="d-none">—</span>
+
+            <!-- Run Prediction button -->
+            <button class="btn btn-success w-100 mb-3" onclick="runMLPredict()">
+              <i class="bi bi-play-circle-fill me-2"></i>Run Prediction
+            </button>
+
+            <!--
+              ML OUTPUT BOX
+              Hidden by default; appears after a successful prediction.
+            -->
+            <div id="ml-result-box" class="p-3 mb-2">
+              <div class="row text-center">
+                <div class="col-6">
+                  <div class="text-muted small">Required Volume</div>
+                  <div class="ml-big" id="ml-out-volume">—</div>
+                  <div class="text-muted small">Litres</div>
+                </div>
+                <div class="col-6">
+                  <div class="text-muted small">Irrigation Duration</div>
+                  <div class="ml-big" id="ml-out-duration">—</div>
+                  <div class="text-muted small">Minutes</div>
+                </div>
+              </div>
+              <hr class="my-2">
+              <!-- Inputs used for this prediction -->
+              <div class="row text-center small mb-2">
+                <div class="col-12 text-muted fw-semibold mb-1">Inputs used</div>
+                <div class="col">
+                  <div class="text-muted">Temp</div>
+                  <strong id="ml-out-temp">—</strong> °C
+                </div>
+                <div class="col">
+                  <div class="text-muted">Humidity</div>
+                  <strong id="ml-out-humid">—</strong> %
+                </div>
+                <div class="col">
+                  <div class="text-muted">Moisture</div>
+                  <strong id="ml-out-moisture">—</strong> %
+                </div>
+                <div class="col">
+                  <div class="text-muted">Target</div>
+                  <strong id="ml-out-target">—</strong> %
+                </div>
+                <div class="col">
+                  <div class="text-muted">Flow Q</div>
+                  <strong id="ml-out-q">—</strong> L/m
+                </div>
+              </div>
+              <hr class="my-2">
+              <div class="row text-center small text-muted">
+                <div class="col-4">
+                  Moisture Deficit:
+                  <strong id="ml-out-deficit">—</strong> %
+                </div>
+                <div class="col-8 text-start">
+                  Model: <em id="ml-out-model">—</em>
+                </div>
+              </div>
+            </div>
+
+            <div id="ml-error-box" class="alert alert-danger d-none py-2 small" role="alert"></div>
+
+          </div>
+        </div>
+      </div><!-- /Panel 4 -->
+
+    </div><!-- /row 3: ML Volumetric Test -->
+
+  </div><!-- /container-fluid -->
+
+  <!-- TOAST NOTIFICATIONS (top-right corner) -->
+  <div class="toast-container position-fixed top-0 end-0 p-3">
+    <div id="liveToast" class="toast align-items-center border-0" role="alert" aria-live="assertive">
+      <div class="d-flex">
+        <div class="toast-body" id="toast-body">—</div>
+        <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SCRIPTS
+  ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Bootstrap 5 JS (needed for toast) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Chart.js 4 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <!-- Chart.js date/time adapter (for real-time x-axis labels) -->
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+
+  <script>
+  'use strict';
+  /*
+  ============================================================================
+    JavaScript — Thesis Diagnostics Dashboard
+    Sections:
+      A. Global state
+      B. Chart.js initialisation
+      C. SSE (Server-Sent Events) live data feed
+      D. Calibration panel functions
+      E. Relay panel functions
+      F. ML prediction panel functions
+      G. Utility helpers
+      H. Boot / initialisation
+  ============================================================================
+  */
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  A. GLOBAL STATE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // CHANNEL_LABELS must match the Python CHANNEL_LABELS dict.
+  const CHANNEL_LABELS = {
+    0: 'SEN0308 #1',
+    1: 'SEN0308 #2',
+    2: 'SEN0193',
+    3: 'Generic v1.2',
+  };
+
+  // Chart.js line colours — one per ADS1115 channel.
+  const CH_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12'];
+
+  // Which valve waters each sensor channel (must match Python CHANNEL_VALVE_MAP).
+  const CHANNEL_VALVE_MAP = {
+    0: 'valve1',   // SEN0308 #1  → Zone 1
+    1: 'valve2',   // SEN0308 #2  → Zone 2
+    2: 'valve3',   // SEN0193     → Zone 3
+    3: 'valve4',   // Generic v1.2 → Zone 4
+  };
+
+  // Most recent sensor snapshot (SSE), used by Panel 1 and ML panel.
+  let latestSensorData = null;
+
+  // Current calibration state.
+  let calibData = {};
+
+  // Current relay state.
+  let relayData = {};
+
+  // Bootstrap Toast instance.
+  let toastInstance = null;
+
+  // ── Stress-test state (Panel 2) ───────────────────────────────────────────
+  let testOnDuration    = 120;   // seconds valve stays open  (default 2 min)
+  let testTotalDuration = 300;   // total test length in seconds (default 5 min)
+  let _testPollTimer     = null;  // setInterval handle for status polling
+  let _activeTestChannel = null;  // ADS channel index (0-3) being tested, or null
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  B. CHART.JS — 4 SENSOR RELIABILITY TEST CHARTS   (Panel 2)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Format elapsed seconds as "M:SS" for x-axis tick labels and tooltips. */
+  function fmtSeconds(s) {
+    const m   = Math.floor(s / 60);
+    const sec = String(Math.floor(s % 60)).padStart(2, '0');
+    return `${m}:${sec}`;
+  }
+
+  /**
+   * Chart.js background plugin — draws the green watering phase (0–onDuration)
+   * and a dashed valve-OFF line on every test chart canvas.
+   * Reads the global testOnDuration / testTotalDuration for boundaries.
+   */
+  const testPhaseBgPlugin = {
+    id: 'testPhaseBg',
+    beforeDraw(chartInst) {
+      // Only shade the chart whose valve is currently open.
+      if (_activeTestChannel === null || chartInst !== testCharts[_activeTestChannel]) return;
+      const { ctx: c, chartArea, scales } = chartInst;
+      if (!chartArea || !scales?.x) return;
+      const sx  = scales.x;
+      const y1  = chartArea.top;
+      const y2  = chartArea.bottom;
+      const x0  = sx.getPixelForValue(0);
+      const xOff = sx.getPixelForValue(testOnDuration);
+
+      c.save();
+
+      // Light-green band: valve-open phase.
+      c.fillStyle = 'rgba(40, 167, 69, 0.10)';
+      c.fillRect(x0, y1, xOff - x0, y2 - y1);
+
+      // Dashed vertical line at valve-off boundary.
+      c.strokeStyle = 'rgba(40, 167, 69, 0.55)';
+      c.lineWidth   = 1.5;
+      c.setLineDash([5, 4]);
+      c.beginPath();
+      c.moveTo(xOff, y1);
+      c.lineTo(xOff, y2);
+      c.stroke();
+      c.setLineDash([]);
+
+      // Tiny "Valve OFF" label at the top of the boundary line.
+      c.fillStyle = 'rgba(40, 167, 69, 0.85)';
+      c.font      = 'bold 9px sans-serif';
+      c.fillText('Valve OFF', xOff + 3, y1 + 11);
+
+      c.restore();
+    },
+  };
+  Chart.register(testPhaseBgPlugin);
+
+  /**
+   * Create one Chart.js instance for channel *ch* in canvas *canvasId*.
+   * X-axis: linear 0–300 s (elapsed time).
+   * Y-axis: calibrated moisture % 0–100.
+   */
+  function _makeTestChart(canvasId, ch) {
+    const c2d = document.getElementById(canvasId).getContext('2d');
+    return new Chart(c2d, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label:           CHANNEL_LABELS[ch],
+          data:            [],    // {x: seconds, y: pct}
+          borderColor:     CH_COLORS[ch],
+          backgroundColor: CH_COLORS[ch] + '22',
+          borderWidth:     2,
+          pointRadius:     2.5,
+          tension:         0.35,
+          fill:            false,
+          parsing:         false,
+        }],
+      },
+      options: {
+        responsive:          true,
+        maintainAspectRatio: false,
+        animation:           { duration: 0 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => fmtSeconds(items[0]?.parsed?.x ?? 0),
+              label: item  => {
+                const y = item.parsed.y;
+                return y !== null ? `${y.toFixed(1)} %` : 'N/A (no calibration)';
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type:  'linear',
+            min:   0,
+            max:   testTotalDuration,
+            title: { display: false },
+            ticks: { callback: fmtSeconds, stepSize: 60, maxTicksLimit: 7 },
+            grid:  { color: '#e9ecef' },
+          },
+          y: {
+            min:   0,
+            max:   100,
+            title: { display: true, text: '%', font: { size: 10 } },
+            grid:  { color: '#e9ecef' },
+          },
+        },
+      },
+    });
+  }
+
+  // Initialise all four charts once the DOM is ready.
+  const testCharts = [0, 1, 2, 3].map(ch => _makeTestChart(`testChart${ch}`, ch));
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  B2. SENSOR RELIABILITY TEST CONTROL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Start a 5-min sensor-reliability test for *valve* ('valve1' | 'valve2'). */
+  async function startZoneTest(valve) {
+    try {
+      const res  = await fetch('/api/stress-test/start', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ valve }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Could not start test', 'danger'); return; }
+
+      testOnDuration    = data.on_duration    || 120;
+      testTotalDuration = data.total_duration || 300;
+
+      // Track which channel is active and highlight its card.
+      _activeTestChannel = parseInt(valve.replace('valve', '')) - 1;
+      for (let c = 0; c < 4; c++) {
+        const card = document.getElementById(`testChart${c}`)?.closest('.border');
+        if (card) card.classList.toggle('test-card-active', c === _activeTestChannel);
+      }
+
+      // Resize and clear all four test charts.
+      testCharts.forEach(tc => {
+        tc.options.scales.x.max  = testTotalDuration;
+        tc.data.datasets[0].data = [];
+        tc.update('none');
+      });
+      for (let c = 0; c < 4; c++) {
+        const el = document.getElementById(`testStatus${c}`);
+        if (el) el.textContent = '…';
+      }
+
+      _setTestUiRunning(true);
+      const zoneNum = parseInt(valve.replace('valve', ''));
+      showToast(
+        `Zone ${zoneNum} Test started — Valve ${zoneNum} open for ${testOnDuration / 60} min`,
+        'success'
+      );
+
+      // Poll backend every 3 s.
+      if (_testPollTimer) clearInterval(_testPollTimer);
+      _testPollTimer = setInterval(_pollTestStatus, 3000);
+
+    } catch (e) {
+      showToast(`Test start failed: ${e.message}`, 'danger');
+    }
+  }
+
+  /** Abort the running test. */
+  async function stopZoneTest() {
+    try { await fetch('/api/stress-test/stop', { method: 'POST' }); } catch (_) {}
+    _setTestUiRunning(false);
+    if (_testPollTimer) { clearInterval(_testPollTimer); _testPollTimer = null; }
+    showToast('Test stopped', 'warning');
+  }
+
+  /** Poll /api/stress-test/status and update charts + progress bar. */
+  async function _pollTestStatus() {
+    try {
+      const status = await (await fetch('/api/stress-test/status')).json();
+      _updateTestCharts(status);
+
+      const elapsed = status.elapsed_s || 0;
+      const pct     = Math.min(100, (elapsed / (status.total_duration || testTotalDuration)) * 100);
+
+      const progBar = document.getElementById('test-progress-bar');
+      if (progBar) progBar.style.width = pct + '%';
+
+      const timeLabel = document.getElementById('test-time-label');
+      if (timeLabel) timeLabel.textContent =
+        `${fmtSeconds(elapsed)} / ${fmtSeconds(status.total_duration || testTotalDuration)}`;
+
+      const phaseLabel = document.getElementById('test-phase-label');
+      if (phaseLabel) phaseLabel.textContent =
+        status.phase === 'watering'   ? '🟢 Valve open — watering' :
+        status.phase === 'monitoring' ? '⚪ Monitoring — valve closed' :
+                                        '✅ Test complete';
+
+      const hdBadge = document.getElementById('test-header-badge');
+      if (hdBadge) {
+        hdBadge.textContent = status.phase === 'watering'   ? 'Watering' :
+                              status.phase === 'monitoring' ? 'Monitoring' :
+                              status.running                ? 'Running' : 'Done';
+        hdBadge.className   = status.phase === 'watering'   ? 'badge bg-success' :
+                              status.phase === 'monitoring' ? 'badge bg-secondary' :
+                                                              'badge bg-info text-dark';
+      }
+      const hdTimer = document.getElementById('test-timer-hdr');
+      if (hdTimer) hdTimer.textContent =
+        `${fmtSeconds(elapsed)} / ${fmtSeconds(status.total_duration || testTotalDuration)}`;
+
+      if (!status.running) {
+        _setTestUiRunning(false);
+        clearInterval(_testPollTimer);
+        _testPollTimer = null;
+        showToast('Reliability test complete', 'success');
+      }
+    } catch (_) { /* ignore transient errors */ }
+  }
+
+  /** Update all four charts with data from the backend status response. */
+  function _updateTestCharts(status) {
+    for (let ch = 0; ch < 4; ch++) {
+      const pts = (status.data?.[String(ch)] || [])
+        .map(d => ({ x: d.t, y: d.pct }));
+      const tc = testCharts[ch];
+      if (!tc) continue;
+      tc.data.datasets[0].data = pts;
+      tc.update('none');
+
+      const statusEl = document.getElementById(`testStatus${ch}`);
+      if (!statusEl || !pts.length) continue;
+      const latest    = pts[pts.length - 1].y;
+      const latestStr = latest !== null ? latest.toFixed(1) + ' %' : '—';
+
+      if (status.phase === 'watering') {
+        statusEl.innerHTML = `<span style="color:var(--bs-success)">●</span> Watering · ${latestStr}`;
+      } else if (status.phase === 'monitoring') {
+        statusEl.innerHTML = `<span class="text-secondary">●</span> Monitoring · ${latestStr}`;
+      } else if (status.phase === 'done') {
+        const valPts = pts.filter(p => p.y !== null);
+        if (valPts.length) {
+          const maxV = Math.max(...valPts.map(p => p.y)).toFixed(1);
+          const minV = Math.min(...valPts.map(p => p.y)).toFixed(1);
+          statusEl.innerHTML =
+            `<span class="text-success fw-semibold">Complete</span> · Range ${minV}–${maxV} %`;
+        }
+      }
+    }
+  }
+
+  /** Show/hide test controls depending on running state. */
+  function _setTestUiRunning(running) {
+    ['btn-z1-test','btn-z2-test','btn-z3-test','btn-z4-test'].forEach(id => {
+      document.getElementById(id).disabled = running;
+    });
+    document.getElementById('btn-stop-test').classList.toggle('d-none', !running);
+
+    const progWrap = document.getElementById('test-progress-wrap');
+    if (progWrap) progWrap.style.display = running ? '' : 'none';
+
+    if (!running) {
+      // Clear active channel and remove card highlights.
+      _activeTestChannel = null;
+      for (let c = 0; c < 4; c++) {
+        const card = document.getElementById(`testChart${c}`)?.closest('.border');
+        if (card) card.classList.remove('test-card-active');
+      }
+      testCharts.forEach(tc => tc.update('none')); // redraw without shading
+      const bar = document.getElementById('test-progress-bar');
+      if (bar) bar.style.width = '0%';
+      const hdBadge = document.getElementById('test-header-badge');
+      if (hdBadge) { hdBadge.textContent = 'Idle'; hdBadge.className = 'badge bg-secondary'; }
+      const hdTimer = document.getElementById('test-timer-hdr');
+      if (hdTimer) hdTimer.textContent = '';
+    }
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  C. SSE — LIVE DATA FEED
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /*
+    EventSource connects to the server's /api/stream endpoint.
+    Each incoming 'data:' event is a full sensor snapshot JSON string.
+    On disconnect, we retry automatically after 5 seconds.
+  */
+  let sseSource = null;
+
+  function connectSSE() {
+    if (sseSource) {
+      sseSource.close();
+    }
+
+    sseSource = new EventSource('/api/stream');
+
+    sseSource.onopen = () => {
+      const badge = document.getElementById('conn-badge');
+      badge.className = 'badge bg-success';
+      badge.innerHTML = '<i class="bi bi-wifi me-1"></i>Live';
+    };
+
+    sseSource.onmessage = (event) => {
+      let snapshot;
+      try {
+        snapshot = JSON.parse(event.data);
+      } catch (e) {
+        return;   // Ignore malformed payloads.
+      }
+
+      // Cache the latest reading for other panels to use (e.g. "Use Live").
+      latestSensorData = snapshot;
+
+      /*
+        Update the calibration table's "Live V" and "Cal %" columns
+        so the panel refreshes without requiring a manual button press.
+      */
+      updateCalibLiveColumns(snapshot);
+
+      /*
+        Update the navbar BME280 temperature and humidity display.
+      */
+      document.getElementById('nav-temp').textContent =
+        snapshot.temperature !== null ? snapshot.temperature : '—';
+      document.getElementById('nav-hum').textContent =
+        snapshot.humidity !== null ? snapshot.humidity : '—';
+
+      // Show any hardware error prominently.
+      const hwEl = document.getElementById('hw-error-text');
+      if (snapshot.hw_error) {
+        hwEl.textContent = '⚠ ' + snapshot.hw_error;
+        hwEl.classList.remove('d-none');
+      } else {
+        hwEl.classList.add('d-none');
+      }
+    };
+
+    sseSource.onerror = () => {
+      const badge = document.getElementById('conn-badge');
+      badge.className = 'badge bg-danger';
+      badge.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Disconnected';
+      sseSource.close();
+      // Reconnect after a 5-second delay.
+      setTimeout(connectSSE, 5000);
+    };
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  D. CALIBRATION PANEL FUNCTIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Fetch calibration baselines from /api/calibration and rebuild the table.
+   * Called on page load and after every capture/reset action.
+   */
+  async function loadCalibData() {
+    try {
+      const res  = await fetch('/api/calibration');
+      calibData  = await res.json();
+      renderCalibTable();
+    } catch (e) {
+      showToast('Failed to load calibration data', 'danger');
+    }
+  }
+
+  /**
+   * Construct the four-row calibration table from calibData and
+   * the latest sensor snapshot (if available).
+   */
+  function renderCalibTable() {
+    const tbody = document.getElementById('calib-tbody');
+    tbody.innerHTML = '';
+
+    for (let ch = 0; ch < 4; ch++) {
+      const key      = `A${ch}`;
+      const baseline = calibData[key] || {};
+      const dryV     = baseline.dry_v;
+      const wetV     = baseline.wet_v;
+      const label    = CHANNEL_LABELS[ch];
+
+      // Pick live values from the latest SSE snapshot (or show '—').
+      let liveVolt = '—';
+      let liveCalPct = '—';
+      if (latestSensorData && latestSensorData.channels[ch]) {
+        const chData = latestSensorData.channels[ch];
+        if (chData.voltage !== null) liveVolt   = chData.voltage.toFixed(4) + ' V';
+        if (chData.calibrated_pct !== null) liveCalPct = chData.calibrated_pct.toFixed(1) + ' %';
+      }
+
+      const row = document.createElement('tr');
+      row.id    = `calib-row-${ch}`;
+      const bothSet  = dryV !== null && wetV !== null;
+      const syncedHtml = bothSet
+        ? `<span class="badge bg-success" title="Baseline pushed to Zone Settings"><i class="bi bi-check-lg"></i> Synced</span>`
+        : `<span class="badge bg-secondary" title="Capture both Dry and Wet to enable sync">Pending</span>`;
+      row.innerHTML = `
+        <td>
+          <i class="bi bi-circle-fill dot-${ch} me-1"></i>
+          <strong>A${ch}</strong> ${label}
+        </td>
+        <td class="volt-cell" id="calib-live-v-${ch}">${liveVolt}</td>
+        <td class="pct-cell"  id="calib-live-pct-${ch}">${liveCalPct}</td>
+        <td class="volt-cell text-muted small" id="calib-dry-${ch}">
+          ${dryV !== null ? dryV.toFixed(4) + ' V' : '<em>—</em>'}
+        </td>
+        <td class="volt-cell text-muted small" id="calib-wet-${ch}">
+          ${wetV !== null ? wetV.toFixed(4) + ' V' : '<em>—</em>'}
+        </td>
+        <td>
+          <button class="btn btn-xs btn-outline-warning px-1 py-0"
+                  style="font-size:.75rem"
+                  onclick="captureBaseline(${ch}, 'dry')"
+                  title="Capture current voltage as bone-dry (0%)">
+            <i class="bi bi-sun"></i> Dry
+          </button>
+        </td>
+        <td>
+          <button class="btn btn-xs btn-outline-primary px-1 py-0"
+                  style="font-size:.75rem"
+                  onclick="captureBaseline(${ch}, 'wet')"
+                  title="Capture current voltage as fully saturated (100%)">
+            <i class="bi bi-droplet-fill"></i> Wet
+          </button>
+        </td>
+        <td>
+          <button class="btn btn-xs btn-outline-danger px-1 py-0"
+                  style="font-size:.75rem"
+                  onclick="resetCalib(${ch})"
+                  title="Clear saved baselines for this channel">
+            <i class="bi bi-x"></i>
+          </button>
+        </td>
+        <td id="calib-sync-${ch}">${syncedHtml}</td>
+      `;
+      tbody.appendChild(row);
+    }
+  }
+
+  /**
+   * Capture feedback also updates the Synced badge without a full re-render.
+   * Called from captureBaseline() with the server's response.
+   */
+  function updateSyncBadge(ch, syncResult) {
+    const cell = document.getElementById(`calib-sync-${ch}`);
+    if (!cell) return;
+    if (syncResult && syncResult.synced) {
+      cell.innerHTML = `<span class="badge bg-success"><i class="bi bi-check-lg"></i> Synced</span>`;
+    } else {
+      cell.innerHTML = `<span class="badge bg-secondary">Pending</span>`;
+    }
+  }
+
+  /**
+   * Manually push all captured baselines to the main app's Zone Settings.
+   * Calls POST /api/calibration/sync on the thesis dashboard backend.
+   */
+  async function syncAllToMain() {
+    try {
+      const res  = await fetch('/api/calibration/sync', { method: 'POST' });
+      const data = await res.json();
+      const synced = Object.entries(data).filter(([, v]) => v.synced).map(([k]) => k);
+      const pending = Object.entries(data).filter(([, v]) => !v.synced).map(([k]) => k);
+      if (synced.length) {
+        showToast(`Synced to Zone Settings: ${synced.join(', ')}`, 'success');
+      }
+      if (pending.length && !synced.length) {
+        showToast('Nothing to sync yet — capture Dry + Wet for at least one channel first.', 'warning');
+      }
+      await loadCalibData(); // Re-render with updated sync badges.
+    } catch (e) {
+      showToast(`Sync failed: ${e.message}`, 'danger');
+    }
+  }
+
+  /**
+   * Update only the "Live V" and "Cal %" columns from new SSE data.
+   * Avoids rebuilding the entire table on every SSE event.
+   */
+  function updateCalibLiveColumns(snapshot) {
+    if (!snapshot || !snapshot.channels) return;
+    snapshot.channels.forEach((chData, ch) => {
+      const voltEl = document.getElementById(`calib-live-v-${ch}`);
+      const pctEl  = document.getElementById(`calib-live-pct-${ch}`);
+      if (voltEl) voltEl.textContent =
+        chData.voltage !== null ? chData.voltage.toFixed(4) + ' V' : '—';
+      if (pctEl)  pctEl.textContent  =
+        chData.calibrated_pct !== null ? chData.calibrated_pct.toFixed(1) + ' %' : '—';
+    });
+  }
+
+  /**
+   * POST to /api/calibration/capture — reads the CURRENT live voltage and
+   * saves it as the dry or wet baseline for the given channel.
+   *
+   * @param {number} ch   - ADS1115 channel index (0–3)
+   * @param {string} point - 'dry' or 'wet'
+   */
+  async function captureBaseline(ch, point) {
+    try {
+      const res  = await fetch('/api/calibration/capture', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ channel: ch, point }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+
+      const synced = data.sync && data.sync.synced;
+      showToast(
+        `A${ch} (${CHANNEL_LABELS[ch]}) — ${point.toUpperCase()} captured: ${data.voltage.toFixed(4)} V` +
+        (synced ? ' · Synced to Zone Settings ✓' : ''),
+        synced ? 'success' : 'info'
+      );
+      // Update only the sync badge in-place; full table reload handles the voltage cells.
+      updateSyncBadge(ch, data.sync);
+      await loadCalibData();
+    } catch (e) {
+      showToast(`Capture failed: ${e.message}`, 'danger');
+    }
+  }
+
+  /**
+   * Reset calibration baselines for a single channel.
+   */
+  async function resetCalib(ch) {
+    if (!confirm(`Clear baselines for A${ch} (${CHANNEL_LABELS[ch]})?`)) return;
+    await fetch('/api/calibration/reset', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ channel: ch }),
+    });
+    showToast(`A${ch} baselines cleared`, 'warning');
+    await loadCalibData();
+  }
+
+  /**
+   * Reset ALL channel baselines after confirmation.
+   */
+  async function resetAllCalib() {
+    if (!confirm('Clear ALL saved calibration baselines?')) return;
+    await fetch('/api/calibration/reset', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({}),
+    });
+    showToast('All calibration baselines cleared', 'warning');
+    await loadCalibData();
+  }
+
+  /**
+   * Trigger an immediate hardware read (calls /api/sensors/live)
+   * and refreshes the calibration table with the new voltages.
+   */
+  async function refreshSensors() {
+    try {
+      const res      = await fetch('/api/sensors/live');
+      latestSensorData = await res.json();
+      updateCalibLiveColumns(latestSensorData);
+      showToast('Sensors refreshed', 'info');
+    } catch (e) {
+      showToast('Sensor refresh failed', 'danger');
+    }
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  E. RELAY & QUEUE PANEL FUNCTIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Fetch relay states from /api/relays and rebuild the control panel.
+   */
+  async function loadRelayData() {
+    try {
+      const res = await fetch('/api/relays');
+      relayData = await res.json();
+      renderRelayPanel(relayData);
+    } catch (e) {
+      showToast('Failed to load relay state', 'danger');
+    }
+  }
+
+  /**
+   * Build the relay control rows and queue visualiser from a relay snapshot.
+   *
+   * Each row shows:
+   *   • State badge:  green "ACTIVE" | yellow "QUEUED" | grey "OFF"
+   *   • Failsafe countdown (if active)
+   *   • ON button (disabled if already ON or QUEUED)
+   *   • OFF button (disabled if already OFF)
+   */
+  function renderRelayPanel(data) {
+    const container = document.getElementById('relay-rows');
+    container.innerHTML = '';
+
+    // All four zone valves have manual controls.
+    // The pump activates automatically through a hardware diode circuit.
+    const keys = ['valve1', 'valve2', 'valve3', 'valve4'];
+    keys.forEach(key => {
+      const info      = data[key] || {};
+      const state     = info.state    || 'OFF';
+      const label     = info.label    || key;
+      const remaining = info.failsafe_remaining_s;
+
+      // Badge colour and text based on state.
+      let badgeClass, badgeText, badgeIcon;
+      if (state === 'ON') {
+        badgeClass = 'bg-success';  badgeText = 'ACTIVE'; badgeIcon = 'bi-check-circle-fill';
+      } else if (state === 'QUEUED') {
+        badgeClass = 'bg-warning text-dark'; badgeText = 'QUEUED'; badgeIcon = 'bi-hourglass-split';
+      } else {
+        badgeClass = 'bg-secondary'; badgeText = 'OFF'; badgeIcon = 'bi-dash-circle';
+      }
+
+      // Failsafe countdown display.
+      let fsHtml = '';
+      if (remaining !== null && remaining > 0) {
+        const mins = Math.floor(remaining / 60);
+        const secs = Math.floor(remaining % 60);
+        fsHtml = `<span class="badge bg-light text-dark border fs-badge ms-1">
+                    <i class="bi bi-stopwatch me-1"></i>${mins}m ${secs}s
+                  </span>`;
+      }
+
+      const row = document.createElement('div');
+      row.className = 'row align-items-center g-2 mb-2 p-2 rounded bg-light';
+      row.id        = `relay-row-${key}`;
+      row.innerHTML = `
+        <div class="col-auto" style="min-width:90px">
+          <strong>${label}</strong>
+        </div>
+        <div class="col-auto">
+          <span class="badge relay-badge ${badgeClass}">
+            <i class="bi ${badgeIcon} me-1"></i>${badgeText}
+          </span>
+          ${fsHtml}
+        </div>
+        <div class="col-auto ms-auto d-flex gap-2">
+          <button class="btn btn-sm btn-success px-3"
+                  onclick="setRelay('${key}', 'ON')"
+                  ${state === 'ON' || state === 'QUEUED' ? 'disabled' : ''}>
+            <i class="bi bi-power me-1"></i>ON
+          </button>
+          <button class="btn btn-sm btn-danger px-3"
+                  onclick="setRelay('${key}', 'OFF')"
+                  ${state === 'OFF' ? 'disabled' : ''}>
+            <i class="bi bi-stop-circle me-1"></i>OFF
+          </button>
+        </div>
+      `;
+      container.appendChild(row);
+    });
+
+    // Render the queue visualiser.
+    const qDisplay = document.getElementById('queue-display');
+    const queue    = data.queue || [];
+    if (queue.length === 0) {
+      qDisplay.innerHTML = '<em class="text-muted">Queue is empty</em>';
+    } else {
+      qDisplay.innerHTML = queue.map((v, i) =>
+        `<span class="badge bg-warning text-dark me-1">
+           <i class="bi bi-hourglass-split me-1"></i>${i + 1}. ${RELAY_LABELS[v] || v}
+         </span>`
+      ).join('');
+    }
+
+    // Pump auto-on indicator — shows green when any valve is active.
+    const anyValveOn = ['valve1','valve2','valve3','valve4'].some(k => (data[k]?.state === 'ON'));
+    const pumpEl = document.getElementById('pump-auto-indicator');
+    if (pumpEl) {
+      pumpEl.innerHTML = anyValveOn
+        ? '<i class="bi bi-lightning-charge-fill text-success me-1"></i><strong class="text-success">Pump ON</strong> (auto — valve energised)'
+        : '<i class="bi bi-lightning text-muted me-1"></i><span class="text-muted">Pump OFF</span> (starts automatically with any valve)';
+    }
+
+    // GPIO availability indicator.
+    const gpioEl = document.getElementById('gpio-status');
+    if (data.gpio_ready === false) {
+      gpioEl.innerHTML = '<i class="bi bi-exclamation-triangle me-1 text-warning"></i>' +
+        'GPIO unavailable — relay state is simulated (no physical output)';
+    } else {
+      gpioEl.innerHTML = '<i class="bi bi-cpu-fill me-1 text-success"></i>' +
+        'GPIO relay control active';
+    }
+  }
+
+  // Constant lookup for display labels in the queue visualiser.
+  // Pump is excluded from manual control — it turns on automatically via
+  // a hardware diode whenever any valve relay is energised.
+  const RELAY_LABELS = {
+    valve1: 'Valve 1 (Zone 1)',
+    valve2: 'Valve 2 (Zone 2)',
+    valve3: 'Valve 3 (Zone 3)',
+    valve4: 'Valve 4 (Zone 4)',
+  };
+
+  /**
+   * Send a relay ON/OFF command to the backend.
+   *
+   * @param {string} key   - 'valve1' | 'valve2' | 'pump'
+   * @param {string} state - 'ON' | 'OFF'
+   */
+  async function setRelay(key, state) {
+    // Read the failsafe value from the shared input box.
+    const fsInput = document.getElementById('failsafe-input');
+    const fsMins  = fsInput.value ? parseFloat(fsInput.value) : null;
+
+    try {
+      const res     = await fetch(`/api/relays/${key}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ state, failsafe_minutes: fsMins }),
+      });
+      const updated = await res.json();
+      if (!res.ok) throw new Error(updated.error || 'Unknown error');
+
+      relayData = updated;
+      renderRelayPanel(updated);
+
+      const verb = state === 'ON'
+        ? (updated[key]?.state === 'QUEUED' ? 'queued' : 'activated')
+        : 'deactivated';
+      showToast(
+        `${RELAY_LABELS[key] || key} ${verb}` +
+        (fsMins && state === 'ON' ? ` (failsafe ${fsMins} min)` : ''),
+        state === 'ON' ? 'success' : 'secondary'
+      );
+    } catch (e) {
+      showToast(`Relay command failed: ${e.message}`, 'danger');
+    }
+  }
+
+  /**
+   * Poll relay states every 2 seconds to keep the failsafe countdown fresh.
+   * Lightweight GET-only request; does not disturb active valve operation.
+   */
+  function startRelayPoller() {
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/relays');
+        const d   = await res.json();
+        relayData = d;
+        renderRelayPanel(d);
+      } catch (_) { /* Silently ignore transient network errors */ }
+    }, 2000);
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  F. ML VOLUMETRIC PREDICTION PANEL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Copy the latest live BME280 temperature, humidity, and the average
+   * calibrated moisture across active channels into the ML input boxes.
+   * Makes it easy to run predictions on current environmental conditions.
+   */
+  function fillLiveData() {
+    if (!latestSensorData) {
+      showToast('No live data yet — wait for the first SSE event', 'warning');
+      return;
+    }
+    if (latestSensorData.temperature !== null)
+      document.getElementById('ml-temp').value  = latestSensorData.temperature;
+    if (latestSensorData.humidity !== null)
+      document.getElementById('ml-humid').value = latestSensorData.humidity;
+
+    // Average calibrated moisture % across channels that have baselines.
+    const pcts = latestSensorData.channels
+      .map(ch => ch.calibrated_pct)
+      .filter(v => v !== null);
+    if (pcts.length > 0) {
+      const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
+      document.getElementById('ml-moisture').value = avg.toFixed(1);
+    }
+
+    showToast('Live readings copied to ML inputs', 'info');
+  }
+
+  /**
+   * Send the input values to /api/ml/predict and display the returned
+   * volume (L) and duration (min) in the result box.
+   */
+  async function runMLPredict() {
+    const temp          = parseFloat(document.getElementById('ml-temp').value);
+    const humidity      = parseFloat(document.getElementById('ml-humid').value);
+    const moisture      = parseFloat(document.getElementById('ml-moisture').value);
+    const targetMoisture = parseFloat(document.getElementById('ml-target-moisture').value);
+
+    // Determine which zone is selected and read its flow rate.
+    const zone      = document.getElementById('ml-zone-select').value || '1';
+    const flowInput = document.getElementById(`ml-flow-rate-${zone}`);
+    const flowRate  = flowInput ? parseFloat(flowInput.value) : NaN;
+
+    const errBox = document.getElementById('ml-error-box');
+    errBox.classList.add('d-none');
+    errBox.textContent = '';
+
+    if (isNaN(temp) || isNaN(humidity) || isNaN(moisture)) {
+      errBox.textContent = 'Please fill in all three sensor input fields.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    if (isNaN(targetMoisture) || targetMoisture < 0 || targetMoisture > 100) {
+      errBox.textContent = 'Target moisture must be 0–100 %.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    if (isNaN(flowRate) || flowRate <= 0) {
+      errBox.textContent = `Flow rate for Zone ${zone} must be a positive number.`;
+      errBox.classList.remove('d-none');
+      return;
+    }
+
+    try {
+      const res  = await fetch('/api/ml/predict', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          temperature:      temp,
+          humidity,
+          moisture,
+          target_moisture:  targetMoisture,
+          flow_rate:        flowRate,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        errBox.textContent = data.error || 'Prediction failed';
+        errBox.classList.remove('d-none');
+        return;
+      }
+
+      // Populate the result box.
+      document.getElementById('ml-out-volume').textContent   = data.volume_liters.toFixed(3);
+      document.getElementById('ml-out-duration').textContent = data.duration_minutes.toFixed(2);
+      document.getElementById('ml-out-deficit').textContent  = data.inputs.moisture_deficit.toFixed(1);
+      document.getElementById('ml-out-model').textContent    = data.model_source;
+      // Inputs used
+      document.getElementById('ml-out-temp').textContent     = data.inputs.temperature.toFixed(1);
+      document.getElementById('ml-out-humid').textContent    = data.inputs.humidity.toFixed(1);
+      document.getElementById('ml-out-moisture').textContent = data.inputs.current_moisture.toFixed(1);
+      document.getElementById('ml-out-target').textContent   = data.inputs.target_moisture.toFixed(1);
+      document.getElementById('ml-out-q').textContent        = data.flow_rate_lpm.toFixed(2);
+
+      document.getElementById('ml-result-box').style.display = 'block';
+
+    } catch (e) {
+      errBox.textContent = `Request failed: ${e.message}`;
+      errBox.classList.remove('d-none');
+    }
+  }
+
+  /**
+   * Fetch the per-zone target_moisture from the DB and fill the input.
+   * Called on page load and whenever the zone selector changes.
+   */
+  async function _fillZoneTarget() {
+    const zone = document.getElementById('ml-zone-select').value || '1';
+    try {
+      const res     = await fetch('/api/zones/targets');
+      const targets = await res.json();
+      if (targets[zone] != null)
+        document.getElementById('ml-target-moisture').value = targets[zone];
+    } catch (_) {}
+  }
+
+  /**
+   * Fetch dashboard constants from /api/config.
+   * Sets the ML flow-rate display and applies the current ML enabled state.
+   */
+  async function loadConfig() {
+    try {
+      const res  = await fetch('/api/config');
+      const data = await res.json();
+      // Seed all four zone flow rate inputs with the backend default if they
+      // are still at their placeholder value (user hasn't edited them yet).
+      if (data.flow_rate_lpm !== undefined) {
+        const q = parseFloat(data.flow_rate_lpm);
+        [1, 2, 3, 4].forEach(z => {
+          const el = document.getElementById(`ml-flow-rate-${z}`);
+          if (el && (el.value === '' || parseFloat(el.value) === 3.0))
+            el.value = q.toFixed(2);
+        });
+      }
+      applyMLMode(data.ml_enabled ?? true);
+    } catch (_) {}
+  }
+
+  /**
+   * Reflect the ML enabled/disabled state in the toggle checkbox and
+   * Panel 4 card body (greyed-out overlay when disabled).
+   */
+  function applyMLMode(enabled) {
+    const toggle = document.getElementById('ml-mode-toggle');
+    const body   = document.getElementById('panel4-body');
+    if (toggle) toggle.checked = enabled;
+    if (body)   body.classList.toggle('ml-disabled-overlay', !enabled);
+  }
+
+  /**
+   * Called by the ML toggle switch.  POSTs the new state to the backend
+   * then applies it locally so Panel 4 is visually locked when ML is off.
+   */
+  async function toggleMLMode(enabled) {
+    try {
+      const res  = await fetch('/api/ml/mode', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+      applyMLMode(data.enabled);
+      showToast(
+        data.enabled ? 'ML mode enabled' : 'ML mode disabled — Panel 4 locked out',
+        data.enabled ? 'success' : 'warning'
+      );
+    } catch (e) {
+      showToast(`Failed to toggle ML mode: ${e.message}`, 'danger');
+    }
+  }
+
+  /**
+   * Fetch the flow rate Q from the backend.
+   * Now handled by loadConfig() — this stub is kept to avoid breaking any
+   * cached code references but does nothing on its own.
+   */
+  async function loadFlowRate() { await loadConfig(); }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  G. UTILITY HELPERS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Show a Bootstrap toast notification.
+   *
+   * @param {string} message - Text to display.
+   * @param {string} type    - Bootstrap colour name: 'success'|'danger'|'warning'|'info'|'secondary'
+   */
+  function showToast(message, type = 'info') {
+    const toastEl   = document.getElementById('liveToast');
+    const bodyEl    = document.getElementById('toast-body');
+    const colorMap  = {
+      success:   'text-bg-success',
+      danger:    'text-bg-danger',
+      warning:   'text-bg-warning',
+      info:      'text-bg-info',
+      secondary: 'text-bg-secondary',
+    };
+
+    // Remove any previous colour classes.
+    toastEl.className = 'toast align-items-center border-0 ' + (colorMap[type] || 'text-bg-info');
+    bodyEl.textContent = message;
+
+    if (!toastInstance) {
+      toastInstance = new bootstrap.Toast(toastEl, { delay: 3500 });
+    }
+    toastInstance.show();
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  H. BOOT — PAGE INITIALISATION
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /*
+    Run all initialisation tasks when the DOM is ready.
+    Order:
+      1. Load calibration baselines → render the calibration table (Panel 1).
+      2. Load relay state           → render the relay control panel (Panel 3).
+      3. Load / show flow rate      → display Q in ML panel (Panel 4).
+      4. Connect to SSE stream      → live sensor feed for Panel 1 + navbar.
+      5. Start the relay poller     → keep failsafe countdown fresh (Panel 3).
+      6. Check if a test is already running (e.g. page refresh mid-test).
+  */
+  document.addEventListener('DOMContentLoaded', async () => {
+    await Promise.all([
+      loadCalibData(),
+      loadRelayData(),
+      loadConfig(),      // fetches flow rate + ML mode + logging mode
+    ]);
+
+    connectSSE();
+    startRelayPoller();
+
+    // Seed the target moisture input from the zone profile DB.
+    document.getElementById('ml-zone-select').addEventListener('change', _fillZoneTarget);
+    _fillZoneTarget();
+
+    // If a test was already running (e.g. browser refresh), resume polling.
+    try {
+      const status = await (await fetch('/api/stress-test/status')).json();
+      if (status.running) {
+        testOnDuration    = status.on_duration    || 120;
+        testTotalDuration = status.total_duration || 300;
+        _setTestUiRunning(true);
+        _testPollTimer = setInterval(_pollTestStatus, 3000);
+      }
+    } catch (_) {}
+  });
+
+  </script>
+</body>
+</html>

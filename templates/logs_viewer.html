@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Irrigation Logs Viewer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">Irrigation Logs Viewer</div>
+        <nav class="topnav" aria-label="Logs navigation">
+            <a href="http://{{ request.host.split(':')[0] }}:{{ main_port }}/home">Main Dashboard</a>
+            <a href="/?limit=100">100 Rows</a>
+            <a href="/?limit=200">200 Rows</a>
+            <a href="/?limit=500">500 Rows</a>
+        </nav>
+    </header>
+
+    <main class="page-wrap">
+        <section class="card">
+            <h2>Log Stream</h2>
+            <p class="small-text no-margin">Serving logs on port {{ log_port }}. Showing latest {{ limit }} records per table.</p>
+            <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
+                <form method="POST" action="/delete-all" onsubmit="return confirm('Delete all sensor and control logs? This cannot be undone.');">
+                    <button class="btn" type="submit" style="background:#b72d2d;">Delete All Logs</button>
+                </form>
+                {% if cleared == '1' %}
+                <span class="small-text" style="color:#1f7a38;">All logs deleted.</span>
+                {% endif %}
+            </div>
+        </section>
+
+        <section class="card history-wrap">
+            <h3>Sensor Poll Logs</h3>
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Temp (C)</th>
+                        <th>Humidity (%)</th>
+                        <th>Zone 1 Moisture</th>
+                        <th>Zone 2 Moisture</th>
+                        <th>Zone 3 Moisture</th>
+                        <th>Zone 4 Moisture</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in sensor_rows %}
+                    <tr>
+                        <td>{{ row['timestamp'] }}</td>
+                        <td>{{ row['temperature'] }}</td>
+                        <td>{{ row['humidity'] }}</td>
+                        <td>{{ row['soil_moisture_1'] }}</td>
+                        <td>{{ row['soil_moisture_2'] }}</td>
+                        <td>{{ row['soil_moisture_3'] }}</td>
+                        <td>{{ row['soil_moisture_4'] }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7">No sensor logs found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="card history-wrap">
+            <h3>Control Event Logs</h3>
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Zone</th>
+                        <th>Event</th>
+                        <th>Source</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for event in event_rows %}
+                    <tr>
+                        <td>{{ event['timestamp'] }}</td>
+                        <td>{{ event['zone_id'] }}</td>
+                        <td>{{ event['event_type'] }}</td>
+                        <td>{{ event['source'] }}</td>
+                        <td>{{ event['detail'] }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5">No control event logs found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+
+{% block title %}Zones | Irrigation Hub{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Zone Configuration</h2>
+    <p class="small-text">Set crop profiles and moisture targets for automatic control, and control valves manually when needed.</p>
+    <div id="zonesConfigGrid" class="zones-grid"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/zones.js') }}" defer></script>
+{% endblock %}

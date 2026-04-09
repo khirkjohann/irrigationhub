@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+
+{% block title %}Testing | Irrigation Hub{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Calibration</h2>
+    <p class="small-text">Save crop targets as often as needed. Soil baselines are managed in the Thesis Dashboard calibration panel.</p>
+    <div class="zone-controls">
+        <label for="activeCalibrationSensor">Select Active Sensor for Calibration</label>
+        <select id="activeCalibrationSensor">
+            <option value="A0">Zone 1 (Channel A0)</option>
+            <option value="A1">Zone 2 (Channel A1)</option>
+            <option value="A2">Zone 3 (Channel A2)</option>
+            <option value="A3">Zone 4 (Channel A3)</option>
+        </select>
+    </div>
+    <div class="diag-grid">
+        <div class="diag-box">
+            <h3>Crop Target Creator</h3>
+            <div class="zone-controls">
+                <label>Crop Name</label>
+                <input type="text" id="cropTargetName" placeholder="Peanuts Ideal">
+
+                <label>Target Raw Voltage (Ideal Moisture)</label>
+                <div class="actions">
+                    <input type="number" id="cropTargetVoltage" step="0.0001" min="0" max="6.5">
+                    <button class="btn secondary" id="captureTargetBtn" type="button">Capture Live Data</button>
+                </div>
+
+                <button class="btn" id="saveCropTargetBtn" type="button">Save Crop Target</button>
+                <p class="small-text" id="cropTargetMsg">No crop target saved yet.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Saved Catalog</h2>
+    <div class="diag-grid">
+        <div class="diag-box history-wrap">
+            <h3>Crop Targets</h3>
+            <table class="history-table" id="cropTargetTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Target V</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Diagnostics</h2>
+    <div class="diag-grid">
+        <div class="diag-box">
+            <h3>Raw ADS1115 Readout</h3>
+            <p class="no-margin">Raw Value: <strong id="adcValue">--</strong></p>
+            <p class="voltage-row">Voltage: <strong id="adcVoltage">-- V</strong></p>
+            <button class="btn secondary" onclick="refreshRawReadout()">Refresh Readout</button>
+            <p class="small-text" id="rawError"></p>
+        </div>
+        <div class="diag-box">
+            <h3>I2C Hardware Scanner</h3>
+            <button class="btn" onclick="runI2CScan()">Scan I2C Bus</button>
+            <p class="small-text" id="i2cResult">No scan yet.</p>
+        </div>
+        <div class="diag-box">
+            <h3>Sequential Relay Test</h3>
+            <button class="btn" onclick="runRelayTest()">Run Relay Test (1 to 4)</button>
+            <p class="small-text" id="relayResult">No test yet.</p>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/testing.js') }}" defer></script>
+{% endblock %}

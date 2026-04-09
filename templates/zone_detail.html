@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+
+{% block title %}Zone {{ zone_id }} | Irrigation Hub{% endblock %}
+
+{% block content %}
+<section class="card" id="zoneDetailRoot" data-zone-id="{{ zone_id }}">
+    <h2 id="zoneTitle">Zone {{ zone_id }} Overview</h2>
+    <p class="small-text">Dedicated zone page for settings, control, moisture history, and event history.</p>
+    <div class="env-grid">
+        <div class="data-box">
+            <h3>Current Moisture</h3>
+            <p id="zoneMoisture">-- %</p>
+        </div>
+        <div class="data-box">
+            <h3>Target Moisture</h3>
+            <p id="zoneTarget">-- %</p>
+        </div>
+        <div class="data-box">
+            <h3>Valve Status</h3>
+            <p id="zoneValveStatus">--</p>
+        </div>
+    </div>
+    <div class="gauge" style="margin-top:12px;">
+        <div class="gauge-fill" id="zoneGaugeFill" style="width:0%;"></div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Zone Settings and Control</h2>
+    <div class="diag-grid">
+        <div class="diag-box">
+            <h3>Profile Settings</h3>
+            <div class="zone-controls">
+                <label>Soil Baseline</label>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <select id="zoneBaselineSelect" style="flex:1;"></select>
+                    <button class="btn secondary" type="button" id="deleteBaselineBtn"
+                            onclick="deleteSelectedBaseline()"
+                            title="Delete the selected baseline from the database">Delete</button>
+                </div>
+                <label>Crop Target</label>
+                <select id="zoneCropTargetSelect"></select>
+                <button class="btn secondary" id="saveZoneProfileBtn" type="button">Save Zone Assignment</button>
+                <p class="small-text" id="zoneSaveMsg">No changes yet.</p>
+            </div>
+        </div>
+        <div class="diag-box">
+            <h3>Manual Valve Control</h3>
+            <div class="zone-controls">
+                <button class="toggle-btn toggle-off" id="zoneToggleBtn" type="button">Valve OFF (Tap to ON)</button>
+                <label>Failsafe timer (minutes)</label>
+                <input type="number" id="zoneTimerInput" min="0" value="10">
+                <p class="small-text" id="zoneTimerMsg">No active timer</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Recent Moisture History</h2>
+    <div class="history-wrap">
+        <table class="history-table" id="zoneHistoryTable">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Moisture %</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Recent Control Events</h2>
+    <div class="history-wrap">
+        <table class="history-table" id="zoneEventTable">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Source</th>
+                    <th>Detail</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/zone_detail.js') }}" defer></script>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+
+{% block title %}Hardware Status | Irrigation Hub{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Hardware Status</h2>
+    <p class="small-text">Live status for expected thesis hardware connections from the README wiring map.</p>
+    <div class="actions">
+        <button class="btn secondary" onclick="refreshHardwareStatus()">Refresh Now</button>
+        <button class="btn" onclick="runI2CScan()">Run I2C Scan</button>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Power</h2>
+    <p class="small-text">Use Safe Shutdown before unplugging power to avoid SD card corruption.</p>
+    <div class="actions">
+        <button class="btn" id="safeShutdownBtn" type="button">Safe Shutdown</button>
+    </div>
+    <p class="small-text" id="shutdownMessage">System is running.</p>
+</section>
+
+<section class="card">
+    <h2>System Runtime</h2>
+    <div class="env-grid">
+        <div class="data-box">
+            <h3>Sensor Mode</h3>
+            <p id="sensorModeValue">--</p>
+        </div>
+        <div class="data-box">
+            <h3>Last Poll</h3>
+            <p id="lastPollValue">--</p>
+        </div>
+        <div class="data-box">
+            <h3>Last Success</h3>
+            <p id="lastSuccessValue">--</p>
+        </div>
+        <div class="data-box">
+            <h3>Last Error</h3>
+            <p id="lastErrorValue">--</p>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Expected Inputs</h2>
+    <div class="diag-grid" id="expectedInputsGrid"></div>
+    <p class="small-text" id="missingInputsText"></p>
+</section>
+
+<section class="card">
+    <h2>I2C Bus Discovery</h2>
+    <div class="diag-box">
+        <div class="meta-row"><span>Detected Addresses</span><strong id="i2cDetected">--</strong></div>
+        <div class="meta-row"><span>Missing Addresses</span><strong id="i2cMissing">--</strong></div>
+        <p class="small-text" id="i2cErrorText"></p>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Relay GPIO Health</h2>
+    <div class="diag-box">
+        <div class="meta-row"><span>GPIO Available</span><strong id="relayGpioAvailable">--</strong></div>
+        <div class="meta-row"><span>Relay Initialized</span><strong id="relayInitialized">--</strong></div>
+        <div class="meta-row"><span>Message</span><strong id="relayMessage">--</strong></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/hardware.js') }}" defer></script>
+{% endblock %}

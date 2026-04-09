@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+
+{% block title %}Analytics | Irrigation Hub{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Data Analytics and Export</h2>
+    <div class="actions">
+        <button class="btn secondary" onclick="loadTrendData(24)">Last 24 Hours</button>
+        <button class="btn secondary" onclick="loadTrendData(48)">Last 48 Hours</button>
+        <a href="/export/csv"><button class="btn" type="button">Download CSV</button></a>
+    </div>
+    <div class="chart-wrap">
+        <canvas id="trendChart" class="chart-canvas"></canvas>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/analytics.js') }}" defer></script>
+{% endblock %}
