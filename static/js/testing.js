@@ -105,33 +105,6 @@ async function handleCapture(targetInputId, messageId) {
     }
 }
 
-async function refreshRawReadout() {
-    const res = await fetch('/api/diagnostics/raw');
-    const data = await res.json();
-    document.getElementById('adcValue').textContent = data.adc_value ?? '--';
-    document.getElementById('adcVoltage').textContent = data.voltage !== null ? `${data.voltage} V` : '-- V';
-    document.getElementById('rawError').textContent = data.error ? `Error: ${data.error}` : '';
-}
-
-async function runI2CScan() {
-    const res = await fetch('/api/diagnostics/i2c-scan', { method: 'POST' });
-    const data = await res.json();
-    const target = document.getElementById('i2cResult');
-    target.textContent = data.error ? `Error: ${data.error}` : `Detected addresses: ${data.addresses.join(', ') || 'None'}`;
-}
-
-async function runRelayTest() {
-    const target = document.getElementById('relayResult');
-    target.textContent = 'Running test...';
-    const res = await fetch('/api/diagnostics/relay-test', { method: 'POST' });
-    const data = await res.json();
-    target.textContent = data.message || 'Relay test complete.';
-}
-
-window.refreshRawReadout = refreshRawReadout;
-window.runI2CScan = runI2CScan;
-window.runRelayTest = runRelayTest;
-
 window.addEventListener('DOMContentLoaded', async () => {
     const activeSensorSelect = document.getElementById('activeCalibrationSensor');
     if (activeSensorSelect) {
@@ -148,5 +121,95 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('saveCropTargetBtn').addEventListener('click', saveCropTarget);
 
     await refreshCalibrationCatalog();
-    await refreshRawReadout();
+    await refreshIrrigationQueue();
+    setInterval(refreshIrrigationQueue, 5000);
 });
+
+// ── Irrigation queue ───────────────────────────────────────────────────────
+
+function fmtMoisture(v) {
+    return v == null ? '--' : `${v} %`;
+}
+
+function fmtTime(iso) {
+    if (!iso) return '--';
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+async function removeQueueItem(id) {
+    await fetch(`/api/irrigation/queue/${id}`, { method: 'DELETE' });
+    await refreshIrrigationQueue();
+}
+
+function renderQueueTable(queue, active) {
+    const tbody = document.querySelector('#irrQueueTable tbody');
+    const rows = [];
+    if (active) rows.push(active);
+    rows.push(...queue);
+
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="muted-cell">No irrigations queued.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map((item) => {
+        const isRunning = item.status === 'running';
+        const rowClass = isRunning ? ' class="irr-row-running"' : '';
+        const statusBadge = isRunning
+            ? '<span class="zone-badge on" style="font-size:0.75rem;">RUNNING</span>'
+            : '<span class="zone-badge off" style="font-size:0.75rem;">QUEUED</span>';
+        const removeBtn = isRunning
+            ? '&mdash;'
+            : `<button class="btn secondary" style="padding:2px 8px;font-size:.8em" onclick="removeQueueItem(${item.id})">Remove</button>`;
+        return `<tr${rowClass}>
+            <td>Zone ${item.zone_id}</td>
+            <td>${fmtTime(item.added_at)}</td>
+            <td>${fmtMoisture(item.initial_moisture)}</td>
+            <td>${item.volume_liters}</td>
+            <td>${item.duration_minutes}</td>
+            <td>${fmtTime(item.est_complete)}</td>
+            <td>${statusBadge}</td>
+            <td>${removeBtn}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderCompletedTable(completed) {
+    const tbody = document.querySelector('#irrCompletedTable tbody');
+    if (!completed.length) {
+        tbody.innerHTML = '<tr><td colspan="14" class="muted-cell">No completed irrigations yet.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = completed.map((item) => {
+        const actualDur = item.actual_duration_minutes != null ? item.actual_duration_minutes : '--';
+        const estDur    = item.duration_minutes ?? item.est_duration_minutes ?? '--';
+        return `<tr>
+            <td>Zone ${item.zone_id}</td>
+            <td>${item.source || 'manual'}</td>
+            <td>${fmtTime(item.added_at)}</td>
+            <td>${fmtTime(item.started_at)}</td>
+            <td>${fmtTime(item.completed_at)}</td>
+            <td>${item.volume_liters ?? '--'}</td>
+            <td>${estDur}</td>
+            <td><strong>${actualDur}</strong></td>
+            <td>${fmtMoisture(item.initial_moisture)}</td>
+            <td><strong>${fmtMoisture(item.post_moisture)}</strong></td>
+            <td>${item.temperature != null ? item.temperature : '--'}</td>
+            <td>${item.humidity != null ? item.humidity : '--'}</td>
+            <td>${item.crop_target_name || '--'}</td>
+            <td>${item.target_moisture != null ? item.target_moisture + ' %' : '--'}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function refreshIrrigationQueue() {
+    try {
+        const res = await fetch('/api/irrigation/queue');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderQueueTable(data.queue || [], data.active || null);
+        renderCompletedTable(data.completed || []);
+    } catch (e) {
+        // silently ignore
+    }
+}

@@ -67,16 +67,21 @@ DASHBOARD_PORT = int(os.getenv("THESIS_PORT", "5002"))
 # JSON file that persists the dry/wet voltage calibration baselines.
 CALIBRATION_FILE = "/home/pi/thesis_calibration.json"
 
+# JSON file that persists the last completed stress-test session across restarts.
+STRESS_TEST_CACHE = "/home/pi/thesis_stress_test_cache.json"
+
 # Path to the main irrigation app's SQLite database.
 # When both dry and wet voltages are captured for a channel, the baseline is
 # automatically upserted here so it appears in Zone Settings without any
 # manual re-entry in the main app.
 MAIN_DB_PATH = "/home/pi/irrigation_data.db"
 
-# Optional: path to a trained scikit-learn / joblib model.
-# If the file exists it will be loaded; otherwise the built-in linear
-# regression formula is used.
-ML_MODEL_PATH = os.getenv("THESIS_ML_MODEL", "/home/pi/irrigation_model.joblib")
+# Path to the RandomForestRegressor trained by cron_retrain.py.
+# The model is loaded at startup if the file exists.
+ML_MODEL_PATH = os.getenv("THESIS_ML_MODEL", "/home/pi/irrigation_brain.pkl")
+
+# training_data.csv — central truth for the ML pipeline.
+ML_TRAINING_CSV = os.getenv("TRAINING_CSV", "/home/pi/training_data.csv")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,10 +90,10 @@ ML_MODEL_PATH = os.getenv("THESIS_ML_MODEL", "/home/pi/irrigation_model.joblib")
 
 # Human-readable name for each ADS1115 channel — used in tables & chart legend.
 CHANNEL_LABELS = {
-    0: "Generic v1.2",  # Low-cost control / baseline sensor (Zone 1)
-    1: "SEN0308 #2",    # Heavy-duty comparative sensor B (Zone 2)
-    2: "SEN0308 #1",    # Heavy-duty comparative sensor A (Zone 3)
-    3: "SEN0193",       # Premium capacitive sensor (Zone 4)
+    0: "Zone 1",  # Low-cost control / baseline sensor (Generic v1.2)
+    1: "Zone 2",  # Heavy-duty comparative sensor B (SEN0308 #2)
+    2: "Zone 3",  # Heavy-duty comparative sensor A (SEN0308 #1)
+    3: "Zone 4",  # Premium capacitive sensor (SEN0193)
 }
 
 ADS_I2C_ADDRESS   = 0x48          # Single ADS1115 on the I2C bus
@@ -151,16 +156,6 @@ LOGGING_INTERVALS = {
 # ML hardcoded flow rate (Litres / minute).  Adjust to your pump's measured Q.
 ML_FLOW_RATE_LPM = float(os.getenv("THESIS_FLOW_RATE", "3.0"))
 
-# ─── Built-in linear regression coefficients ────────────────────────────────
-# Volume(L) = β₀ + β₁·T + β₂·H + β₃·(100 − M)
-# Based on a simplified single-square-metre water-balance model.
-# IMPORTANT: Replace these with your thesis model's fitted coefficients,
-# OR place a trained joblib file at ML_MODEL_PATH to override them entirely.
-ML_B0 = float(os.getenv("THESIS_ML_B0", "-2.0"))    # intercept
-ML_B1 = float(os.getenv("THESIS_ML_B1",  "0.15"))   # temperature coefficient
-ML_B2 = float(os.getenv("THESIS_ML_B2", "-0.04"))   # humidity coefficient
-ML_B3 = float(os.getenv("THESIS_ML_B3",  "0.08"))   # moisture deficit coeff
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Shared Runtime State  (each variable protected by its own Lock)
@@ -211,6 +206,7 @@ _stress_test = {
     "on_duration":    120,      # seconds valve is open
     "total_duration": 300,      # total test length in seconds
     "data":           {str(ch): [] for ch in range(4)},
+    "readings_meta":  [],        # [{t, temperature, humidity, phase}, ...] one entry per poll
 }
 _stress_test_lock        = threading.Lock()
 _stress_test_stop_event  = threading.Event()   # set() to abort running test
@@ -219,13 +215,12 @@ _stress_test_stop_event  = threading.Event()   # set() to abort running test
 _GPIO      = None
 _gpio_ok   = False              # True once GPIO is initialised successfully
 
-# ─── ML mode ──────────────────────────────────────────────────────────────────
-# Runtime toggle — set via POST /api/ml/mode.
-# When False, /api/ml/predict returns 503 so Panel 4 inputs are clearly disabled.
-_ml_model       = None
-_ml_loaded      = False
-_ml_enabled     = True
-_ml_enabled_lock = threading.Lock()
+# ─── ML model state ─────────────────────────────────────────────────────────
+# Loaded at startup from irrigation_brain.pkl (RandomForestRegressor).
+# If the file does not exist yet, /api/ml/predict returns a 503 until the
+# model is trained via cron_retrain.py.
+_ml_model  = None
+_ml_loaded = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,6 +230,44 @@ _ml_enabled_lock = threading.Lock()
 # In-memory calibration store.  Keyed "A0".."A3", each holds dry_v / wet_v.
 _calibration      = {f"A{ch}": {"dry_v": None, "wet_v": None} for ch in range(4)}
 _calibration_lock = threading.Lock()
+
+
+def _save_stress_test_cache():
+    """Persist the current stress-test data to disk so it survives server restarts."""
+    try:
+        with _stress_test_lock:
+            data = {
+                "valve":         _stress_test.get("valve"),
+                "phase":         _stress_test.get("phase"),
+                "on_duration":   _stress_test.get("on_duration"),
+                "total_duration":_stress_test.get("total_duration"),
+                "data":          {k: list(v) for k, v in _stress_test["data"].items()},
+                "readings_meta": list(_stress_test.get("readings_meta", [])),
+            }
+        with open(STRESS_TEST_CACHE, "w") as fh:
+            json.dump(data, fh)
+        print(f"[TEST] Cached session to {STRESS_TEST_CACHE}")
+    except Exception as exc:
+        print(f"[TEST] Cache save failed: {exc}")
+
+
+def _load_stress_test_cache():
+    """Restore the last stress-test session from disk into the in-memory store."""
+    if not os.path.exists(STRESS_TEST_CACHE):
+        return
+    try:
+        with open(STRESS_TEST_CACHE) as fh:
+            saved = json.load(fh)
+        with _stress_test_lock:
+            _stress_test["valve"]          = saved.get("valve")
+            _stress_test["phase"]          = saved.get("phase", "done")
+            _stress_test["on_duration"]    = saved.get("on_duration", 120)
+            _stress_test["total_duration"] = saved.get("total_duration", 300)
+            _stress_test["data"]           = {k: list(v) for k, v in saved.get("data", {}).items()}
+            _stress_test["readings_meta"]  = list(saved.get("readings_meta", []))
+        print(f"[TEST] Restored last session from {STRESS_TEST_CACHE}")
+    except Exception as exc:
+        print(f"[TEST] Cache load failed: {exc}")
 
 
 def _load_calibration():
@@ -287,9 +320,12 @@ def _sync_channel_to_main_db(ch):
     if dry_v is None or wet_v is None:
         return {"synced": False, "reason": "Waiting for both dry and wet to be captured"}
 
+    # ADS channel n maps directly to zone_id n+1
+    zone_id = ch + 1
     name = f"{CHANNEL_LABELS[ch]} ({key})"
     try:
         conn = sqlite3.connect(MAIN_DB_PATH, timeout=10)
+        # 1. Upsert the baseline row.
         conn.execute(
             """
             INSERT INTO soil_baseline (name, dry_voltage, wet_voltage)
@@ -300,9 +336,18 @@ def _sync_channel_to_main_db(ch):
             """,
             (name, dry_v, wet_v),
         )
+        # 2. Retrieve the row id (works for both insert and update).
+        baseline_id = conn.execute(
+            "SELECT id FROM soil_baseline WHERE name = ?", (name,)
+        ).fetchone()[0]
+        # 3. Link it to the correct zone so the main app uses calibrated values.
+        conn.execute(
+            "UPDATE zone_profile SET soil_baseline_id = ? WHERE zone_id = ?",
+            (baseline_id, zone_id),
+        )
         conn.commit()
         conn.close()
-        print(f"[SYNC] Baseline '{name}' → {MAIN_DB_PATH}")
+        print(f"[SYNC] Baseline '{name}' (id={baseline_id}) → zone {zone_id}")
         return {"synced": True, "name": name, "dry_voltage": dry_v, "wet_voltage": wet_v}
     except Exception as exc:
         print(f"[SYNC] Failed for channel {ch}: {exc}")
@@ -708,9 +753,9 @@ def _relay_snapshot():
 
 def _load_ml_model():
     """
-    Attempt to load a trained scikit-learn model from ML_MODEL_PATH using
-    joblib.  Called once at startup.  Falls back to the built-in linear
-    regression if the file is absent or incompatible.
+    Load the RandomForestRegressor from irrigation_brain.pkl.
+    Called once at startup.  If the file is absent the model stays None;
+    /api/ml/predict will return 503 until cron_retrain.py has run.
     """
     global _ml_model, _ml_loaded
     if _ml_loaded:
@@ -719,25 +764,21 @@ def _load_ml_model():
     try:
         import joblib
         _ml_model = joblib.load(ML_MODEL_PATH)
-        print(f"[ML] Loaded trained model from {ML_MODEL_PATH}")
+        print(f"[ML] Loaded RandomForest from {ML_MODEL_PATH}")
     except Exception as exc:
         _ml_model = None
-        print(f"[ML] No trained model found — using built-in regression: {exc}")
+        print(f"[ML] Model not found — run cron_retrain.py to train it: {exc}")
 
 
 def run_ml_prediction(temperature, humidity, current_moisture, flow_rate_override=None, target_moisture=100.0):
     """
-    Predict irrigation Volume (L) and Duration (min) given environmental inputs.
+    Predict irrigation Volume (L) and Duration (min) using the trained
+    RandomForestRegressor (irrigation_brain.pkl).
 
-    If a joblib model was loaded it receives a (1, 3) feature array:
-        [temperature, humidity, current_moisture]
+    Features passed to the model: [Temp (°C), Humidity (%), Moisture_Deficit (%)]
+    where Moisture_Deficit = max(0, target_moisture − current_moisture).
 
-    Otherwise the built-in multivariate linear regression is evaluated:
-        Volume(L) = β₀ + β₁·T + β₂·H + β₃·(target_moisture − current_moisture)
-
-    Duration(min) = Volume / Q    where Q = ML_FLOW_RATE_LPM
-
-    Returns a result dict with volume, duration, inputs, and model info.
+    Returns None for volume/duration if the model has not been trained yet.
     """
     temp     = float(temperature)
     humidity = float(humidity)
@@ -745,30 +786,42 @@ def run_ml_prediction(temperature, humidity, current_moisture, flow_rate_overrid
     target   = float(target_moisture)
     deficit  = max(0.0, target - moisture)
 
-    if _ml_model is not None:
-        # ── Trained model path ───────────────────────────────────────────────
-        try:
-            import numpy as np
-            features     = np.array([[temp, humidity, moisture]])
-            volume       = float(_ml_model.predict(features)[0])
-            model_source = f"Trained model: {os.path.basename(ML_MODEL_PATH)}"
-        except Exception as exc:
-            volume       = 0.0
-            model_source = f"Model predict() failed: {exc}"
-    else:
-        # ── Built-in linear regression fallback ───────────────────────────────
-        volume = (
-            ML_B0
-            + ML_B1 * temp
-            + ML_B2 * humidity
-            + ML_B3 * deficit
-        )
-        model_source = (
-            "Built-in regression — "
-            f"β₀={ML_B0}, β₁={ML_B1}, β₂={ML_B2}, β₃={ML_B3}"
-        )
+    if _ml_model is None:
+        return {
+            "volume_liters":    None,
+            "duration_minutes": None,
+            "flow_rate_lpm":    ML_FLOW_RATE_LPM,
+            "model_source":     "No trained model — collect data with Panel 6, then run cron_retrain.py",
+            "inputs": {
+                "temperature":      temp,
+                "humidity":         humidity,
+                "current_moisture": moisture,
+                "target_moisture":  target,
+                "moisture_deficit": deficit,
+            },
+        }
 
-    volume   = max(0.0, round(volume, 3))
+    try:
+        import numpy as np
+        features = np.array([[temp, humidity, deficit]])
+        volume   = max(0.0, float(_ml_model.predict(features)[0]))
+        model_source = f"RandomForest: {os.path.basename(ML_MODEL_PATH)}"
+    except Exception as exc:
+        return {
+            "volume_liters":    None,
+            "duration_minutes": None,
+            "flow_rate_lpm":    ML_FLOW_RATE_LPM,
+            "model_source":     f"Model predict() failed: {exc}",
+            "inputs": {
+                "temperature":      temp,
+                "humidity":         humidity,
+                "current_moisture": moisture,
+                "target_moisture":  target,
+                "moisture_deficit": deficit,
+            },
+        }
+
+    volume   = round(volume, 3)
     q        = float(flow_rate_override) if flow_rate_override is not None else ML_FLOW_RATE_LPM
     duration = round(volume / q, 2) if q > 0 else 0.0
 
@@ -846,8 +899,15 @@ def _run_stress_test(valve_key, on_duration=120, total_duration=300, collect_int
                 _stress_test["phase"] = "watering" if elapsed < on_duration else "monitoring"
 
             reading = _read_hardware()
+            current_phase = "watering" if elapsed < on_duration else "monitoring"
 
             with _stress_test_lock:
+                _stress_test["readings_meta"].append({
+                    "t":           round(elapsed, 1),
+                    "temperature": reading.get("temperature"),
+                    "humidity":    reading.get("humidity"),
+                    "phase":       current_phase,
+                })
                 for ch in range(4):
                     c = reading["channels"][ch]
                     _stress_test["data"][str(ch)].append({
@@ -865,6 +925,7 @@ def _run_stress_test(valve_key, on_duration=120, total_duration=300, collect_int
         with _stress_test_lock:
             _stress_test["running"] = False
             _stress_test["phase"]   = "done"
+        _save_stress_test_cache()
         # Release the testing lock in the shared DB.
         try:
             conn = sqlite3.connect(MAIN_DB_PATH, timeout=10)
@@ -1051,6 +1112,7 @@ def api_stress_test_start():
         _stress_test["on_duration"]    = on_dur
         _stress_test["total_duration"] = total_dur
         _stress_test["data"]           = {str(ch): [] for ch in range(4)}
+        _stress_test["readings_meta"]  = []
 
     t = threading.Thread(
         target=_run_stress_test,
@@ -1105,7 +1167,71 @@ def api_stress_test_stop():
     return jsonify({"status": "stopped"})
 
 
-# ── Relay control ─────────────────────────────────────────────────────────────
+@app.route("/api/stress-test/export-csv")
+def api_stress_test_export_csv():
+    """
+    Download the last completed stress-test session as a CSV file.
+
+    Columns:
+      timestamp, valve_tested, phase, elapsed_s,
+      temperature, humidity,
+      ch0_voltage, ch0_moisture_pct,
+      ch1_voltage, ch1_moisture_pct,
+      ch2_voltage, ch2_moisture_pct,
+      ch3_voltage, ch3_moisture_pct,
+      volume_liters_actual   ← blank; fill in manually for ML training
+
+    One row per 5-second poll interval.
+    """
+    import csv as _csv
+    import io
+
+    with _stress_test_lock:
+        valve      = _stress_test.get("valve") or "unknown"
+        meta_list  = list(_stress_test.get("readings_meta", []))
+        data_snap  = {k: list(v) for k, v in _stress_test["data"].items()}
+
+    if not meta_list:
+        return jsonify({"error": "No test data available. Run a test first."}), 404
+
+    out = io.StringIO()
+    w   = _csv.writer(out)
+    w.writerow([
+        "timestamp", "valve_tested", "phase", "elapsed_s",
+        "temperature", "humidity",
+        "ch0_voltage", "ch0_moisture_pct",
+        "ch1_voltage", "ch1_moisture_pct",
+        "ch2_voltage", "ch2_moisture_pct",
+        "ch3_voltage", "ch3_moisture_pct",
+        "volume_liters_actual",
+    ])
+
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for i, meta in enumerate(meta_list):
+        row = [
+            datetime.now().strftime("%Y-%m-%d ") + f"{int(meta['t']//3600):02d}:{int((meta['t']%3600)//60):02d}:{int(meta['t']%60):02d}",
+            valve,
+            meta.get("phase", ""),
+            meta.get("t", ""),
+            meta.get("temperature", ""),
+            meta.get("humidity", ""),
+        ]
+        for ch in range(4):
+            pts = data_snap.get(str(ch), [])
+            pt  = pts[i] if i < len(pts) else {}
+            row.append(pt.get("volt", ""))
+            row.append(pt.get("pct", ""))
+        row.append("")   # volume_liters_actual — blank for user to fill
+        w.writerow(row)
+
+    filename = f"stress_test_{valve}_{now_str}.csv"
+    return Response(
+        out.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 
 @app.route("/api/relays", methods=["GET"])
 def api_relays_get():
@@ -1197,44 +1323,13 @@ def api_stream():
     return Response(generate(), mimetype="text/event-stream", headers=headers)
 
 
-# ── ML mode toggle ────────────────────────────────────────────────────────────
-
-@app.route("/api/ml/mode", methods=["GET"])
-def api_ml_mode_get():
-    """Return whether ML mode is currently enabled."""
-    with _ml_enabled_lock:
-        enabled = _ml_enabled
-    return jsonify({"enabled": enabled})
-
-
-@app.route("/api/ml/mode", methods=["POST"])
-def api_ml_mode_set():
-    """
-    Enable or disable the ML prediction panel at runtime.
-    Request body: { "enabled": true | false }
-    When disabled /api/ml/predict returns 503 so Panel 4 inputs grey out.
-    """
-    global _ml_enabled
-    data = request.get_json(force=True) or {}
-    if "enabled" not in data:
-        return jsonify({"error": "enabled is required"}), 400
-    enabled = bool(data["enabled"])
-    with _ml_enabled_lock:
-        _ml_enabled = enabled
-    print(f"[ML] Mode {'enabled' if enabled else 'disabled'}")
-    return jsonify({"enabled": enabled})
-
-
 @app.route("/api/config")
 def api_config():
     """Return read-only dashboard constants for UI initialisation."""
-    with _ml_enabled_lock:
-        ml_enabled = _ml_enabled
     with _logging_mode_lock:
         mode = _logging_mode
     return jsonify({
         "flow_rate_lpm":      ML_FLOW_RATE_LPM,
-        "ml_enabled":         ml_enabled,
         "logging_mode":       mode,
         "logging_interval_s": LOGGING_INTERVALS[mode],
     })
@@ -1264,16 +1359,15 @@ def api_ml_predict():
     """
     Run the irrigation-volume ML regression.
 
-    Returns 503 if ML mode is disabled (toggle in Panel 4).
+    Returns 503 if no trained model is available.
 
     Request body:
         { "temperature": 30.5, "humidity": 65.0, "moisture": 42.0 }
     """
-    with _ml_enabled_lock:
-        if not _ml_enabled:
-            return jsonify(
-                {"error": "ML mode is disabled. Use the toggle in Panel 4 to re-enable it."}
-            ), 503
+    if _ml_model is None:
+        return jsonify({
+            "error": "No trained model available. Collect data with Panel 6, then run cron_retrain.py."
+        }), 503
 
     data = request.get_json(force=True) or {}
     try:
@@ -1313,6 +1407,380 @@ def api_ml_predict():
     return jsonify(result)
 
 
+@app.route("/api/flow-rate-test/save", methods=["POST"])
+def api_flow_rate_save():
+    """
+    Persist the calculated emitter flow rate for a zone back to the main DB.
+
+    Request body:
+        { "zone_id": 1, "flow_rate_lpm": 2.85 }
+    """
+    data = request.get_json(force=True) or {}
+    try:
+        zone_id      = int(data["zone_id"])
+        flow_rate    = float(data["flow_rate_lpm"])
+    except (KeyError, ValueError, TypeError) as exc:
+        return jsonify({"error": f"Invalid input: {exc}"}), 400
+
+    if zone_id not in (1, 2, 3, 4):
+        return jsonify({"error": "zone_id must be 1–4"}), 400
+    if flow_rate <= 0:
+        return jsonify({"error": "flow_rate_lpm must be positive"}), 400
+
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=10)
+        conn.execute(
+            "UPDATE zone_profile SET flow_rate_lpm = ? WHERE zone_id = ?",
+            (round(flow_rate, 4), zone_id),
+        )
+        conn.commit()
+        conn.close()
+        print(f"[FLOW-RATE] Zone {zone_id} → {flow_rate:.4f} L/min saved to main DB")
+        return jsonify({"success": True, "zone_id": zone_id, "flow_rate_lpm": round(flow_rate, 4)})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── ML model metadata ─────────────────────────────────────────────────────────
+
+@app.route("/api/ml/model-info")
+def api_ml_model_info():
+    """
+    Return metadata about the currently loaded RandomForest model and the
+    training dataset.  Also reports whether a trained model exists on disk.
+
+    Used by Panel 4 to display model health / provenance.
+    """
+    meta_path = ML_MODEL_PATH.replace(".pkl", "_meta.json")
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path) as fh:
+                meta = json.load(fh)
+        except Exception:
+            pass
+
+    # Count valid rows in training CSV (exclude header)
+    n_training_rows = 0
+    if os.path.exists(ML_TRAINING_CSV):
+        try:
+            import csv as _csv
+            with open(ML_TRAINING_CSV, newline="") as fh:
+                n_training_rows = max(0, sum(1 for _ in _csv.reader(fh)) - 1)
+        except Exception:
+            pass
+
+    return jsonify({
+        "model_exists":    os.path.exists(ML_MODEL_PATH),
+        "model_path":      ML_MODEL_PATH,
+        "n_training_rows": n_training_rows,
+        "training_csv":    ML_TRAINING_CSV,
+        **meta,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Bootstrap Data Collector  (Panel 6)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  In-memory session state: only one bootstrap session can run at a time.
+#  The browser polls GET /api/bootstrap/status while the 10-minute timer
+#  counts down, then POSTs the final moisture to /api/bootstrap/finalise.
+#
+#  Session lifecycle:
+#    POST /api/bootstrap/start   → starts 10-min timer, returns session_id
+#    GET  /api/bootstrap/status  → time remaining, phase, live readings
+#    POST /api/bootstrap/finalise → post_moisture, writes CSV row, clears state
+#    POST /api/bootstrap/cancel  → abort and clear state
+
+import time as _time_mod   # alias — avoids shadowing the 'time' module imported at top
+import uuid as _uuid_mod
+import csv as _csv_mod
+
+_bootstrap_lock    = threading.Lock()
+_bootstrap_session = {
+    "active":            False,
+    "session_id":        None,
+    "zone_id":           None,
+    "target_moisture":   None,
+    "initial_moisture":  None,
+    "temp":              None,
+    "humidity":          None,
+    "volume_applied":    None,
+    "start_ts":          None,       # float — time.time()
+    "wait_seconds":      600,        # 10 minutes
+    "phase":             "idle",     # "idle" | "waiting" | "ready"
+}
+
+
+def _bootstrap_read_sensors(zone_id: int):
+    """Read live BME280 + soil moisture for one zone.  Returns dict."""
+    result = {"temp": None, "humidity": None, "moisture": None, "error": None}
+    try:
+        import board, busio
+        from adafruit_bme280 import basic as adafruit_bme280
+
+        i2c = busio.I2C(board.SCL, board.SDA)
+        for addr in BME280_ADDRESSES:
+            try:
+                bme = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=addr)
+                result["temp"]     = round(float(bme.temperature), 1)
+                result["humidity"] = round(float(bme.humidity), 1)
+                break
+            except Exception:
+                pass
+
+        import adafruit_ads1x15.ads1115 as ADS
+        from adafruit_ads1x15.analog_in import AnalogIn
+        import time
+
+        ch  = zone_id - 1
+        ads = ADS.ADS1115(i2c, address=ADS_I2C_ADDRESS)
+        _   = AnalogIn(ads, ch).voltage
+        time.sleep(0.05)
+        samples = [float(AnalogIn(ads, ch).voltage) for _ in range(ADS_SMOOTHING_SAMPLES)]
+        voltage = sum(samples) / len(samples)
+
+        # Apply calibration if available
+        key = f"A{ch}"
+        with _calibration_lock:
+            cal = dict(_calibration.get(key, {}))
+        dry_v = cal.get("dry_v")
+        wet_v = cal.get("wet_v")
+        if dry_v is not None and wet_v is not None and (dry_v - wet_v) != 0:
+            pct = (dry_v - voltage) / (dry_v - wet_v) * 100.0
+        else:
+            pct = (1.0 - voltage / 3.3) * 100.0
+        result["moisture"] = round(max(0.0, min(100.0, pct)), 1)
+
+        try:
+            i2c.deinit()
+        except Exception:
+            pass
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def _count_csv_rows() -> int:
+    """Return number of data rows in training_data.csv (excludes header)."""
+    if not os.path.exists(ML_TRAINING_CSV):
+        return 0
+    try:
+        with open(ML_TRAINING_CSV, newline="") as fh:
+            return max(0, sum(1 for _ in _csv_mod.reader(fh)) - 1)
+    except Exception:
+        return 0
+
+
+def _append_training_row(zone_id, target_moisture, initial_moisture,
+                          temp, humidity, moisture_deficit, target_volume):
+    """Append one confirmed row to training_data.csv, creating it if needed."""
+    header = [
+        "Timestamp", "Zone_ID", "Target_Crop_Moisture", "Initial_Moisture",
+        "Temp", "Humidity", "Moisture_Deficit", "Target_Volume",
+    ]
+    write_header = not os.path.exists(ML_TRAINING_CSV)
+    with open(ML_TRAINING_CSV, "a", newline="") as fh:
+        writer = _csv_mod.DictWriter(fh, fieldnames=header)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({
+            "Timestamp":            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Zone_ID":              zone_id,
+            "Target_Crop_Moisture": round(target_moisture, 2),
+            "Initial_Moisture":     round(initial_moisture, 2),
+            "Temp":                 round(temp, 2),
+            "Humidity":             round(humidity, 2),
+            "Moisture_Deficit":     round(moisture_deficit, 4),
+            "Target_Volume":        round(target_volume, 4),
+        })
+
+
+@app.route("/api/bootstrap/start", methods=["POST"])
+def api_bootstrap_start():
+    """
+    Begin a bootstrap data-collection session.
+
+    Request body:
+        {
+          "zone_id":          1,
+          "target_moisture":  60.0,      (% — from zone profile)
+          "volume_applied":   2.5,       (Litres actually applied)
+          "temp":             28.5,      (optional — auto-read if omitted)
+          "humidity":         70.0,      (optional — auto-read if omitted)
+          "initial_moisture": 38.0       (optional — auto-read if omitted)
+        }
+    """
+    with _bootstrap_lock:
+        if _bootstrap_session["active"]:
+            return jsonify({
+                "error": "A session is already running.",
+                "session_id": _bootstrap_session["session_id"],
+            }), 409
+
+    data = request.get_json(force=True) or {}
+    try:
+        zone_id        = int(data["zone_id"])
+        target         = float(data["target_moisture"])
+        volume_applied = float(data["volume_applied"])
+    except (KeyError, ValueError, TypeError) as exc:
+        return jsonify({"error": f"Missing or invalid field: {exc}"}), 400
+
+    if zone_id not in (1, 2, 3, 4):
+        return jsonify({"error": "zone_id must be 1–4"}), 400
+    if volume_applied < 0:
+        return jsonify({"error": "volume_applied must be ≥ 0"}), 400
+
+    # Use provided sensor values, or read from hardware if omitted
+    if all(k in data for k in ("temp", "humidity", "initial_moisture")):
+        temp             = float(data["temp"])
+        humidity         = float(data["humidity"])
+        initial_moisture = float(data["initial_moisture"])
+        sensor_source    = "manual"
+    else:
+        snap = _bootstrap_read_sensors(zone_id)
+        if snap["error"]:
+            return jsonify({"error": f"Sensor read failed: {snap['error']}"}), 503
+        temp             = snap["temp"]  if "temp"     not in data else float(data["temp"])
+        humidity         = snap["humidity"] if "humidity" not in data else float(data["humidity"])
+        initial_moisture = snap["moisture"] if "initial_moisture" not in data else float(data["initial_moisture"])
+        sensor_source    = "live"
+
+    session_id = str(_uuid_mod.uuid4())[:8]
+
+    with _bootstrap_lock:
+        _bootstrap_session.update({
+            "active":           True,
+            "session_id":       session_id,
+            "zone_id":          zone_id,
+            "target_moisture":  target,
+            "initial_moisture": initial_moisture,
+            "temp":             temp,
+            "humidity":         humidity,
+            "volume_applied":   volume_applied,
+            "start_ts":         _time_mod.time(),
+            "wait_seconds":     600,
+            "phase":            "waiting",
+        })
+
+    print(f"[BOOTSTRAP] Session {session_id} started — Zone {zone_id}, "
+          f"initial={initial_moisture}%, volume={volume_applied}L")
+    return jsonify({
+        "session_id":       session_id,
+        "zone_id":          zone_id,
+        "target_moisture":  target,
+        "initial_moisture": initial_moisture,
+        "temp":             temp,
+        "humidity":         humidity,
+        "volume_applied":   volume_applied,
+        "wait_seconds":     600,
+        "sensor_source":    sensor_source,
+    })
+
+
+@app.route("/api/bootstrap/status")
+def api_bootstrap_status():
+    """Return current bootstrap session state and countdown."""
+    with _bootstrap_lock:
+        sess = dict(_bootstrap_session)
+
+    if not sess["active"]:
+        return jsonify({"phase": "idle", "active": False, "csv_rows": _count_csv_rows()})
+
+    elapsed   = _time_mod.time() - sess["start_ts"]
+    remaining = max(0.0, sess["wait_seconds"] - elapsed)
+    phase     = "ready" if remaining == 0 else "waiting"
+
+    # Update phase in shared state
+    with _bootstrap_lock:
+        _bootstrap_session["phase"] = phase
+
+    return jsonify({
+        "active":           True,
+        "phase":            phase,
+        "session_id":       sess["session_id"],
+        "zone_id":          sess["zone_id"],
+        "target_moisture":  sess["target_moisture"],
+        "initial_moisture": sess["initial_moisture"],
+        "temp":             sess["temp"],
+        "humidity":         sess["humidity"],
+        "volume_applied":   sess["volume_applied"],
+        "elapsed_s":        round(elapsed, 1),
+        "remaining_s":      round(remaining, 1),
+        "csv_rows":         _count_csv_rows(),
+    })
+
+
+@app.route("/api/bootstrap/finalise", methods=["POST"])
+def api_bootstrap_finalise():
+    """
+    Submit the post-watering moisture reading and write the training row.
+
+    Request body:
+        { "post_moisture": 58.3 }
+    """
+    with _bootstrap_lock:
+        if not _bootstrap_session["active"]:
+            return jsonify({"error": "No active bootstrap session."}), 409
+        sess = dict(_bootstrap_session)
+
+    data = request.get_json(force=True) or {}
+    try:
+        post_moisture = float(data["post_moisture"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "post_moisture is required"}), 400
+
+    if not (0.0 <= post_moisture <= 100.0):
+        return jsonify({"error": "post_moisture must be 0–100 %"}), 400
+
+    moisture_shift   = post_moisture - sess["initial_moisture"]
+    moisture_deficit = max(0.0, moisture_shift)   # what the water corrected
+
+    _append_training_row(
+        zone_id          = sess["zone_id"],
+        target_moisture  = sess["target_moisture"],
+        initial_moisture = sess["initial_moisture"],
+        temp             = sess["temp"],
+        humidity         = sess["humidity"],
+        moisture_deficit = moisture_deficit,
+        target_volume    = sess["volume_applied"],
+    )
+
+    csv_rows = _count_csv_rows()
+    print(f"[BOOTSTRAP] Session {sess['session_id']} finalised — "
+          f"shift={moisture_shift:+.1f}%, deficit={moisture_deficit:.2f}%, "
+          f"volume={sess['volume_applied']}L. CSV now has {csv_rows} rows.")
+
+    with _bootstrap_lock:
+        _bootstrap_session.update({
+            "active": False, "phase": "idle", "session_id": None,
+        })
+
+    return jsonify({
+        "success":          True,
+        "zone_id":          sess["zone_id"],
+        "initial_moisture": sess["initial_moisture"],
+        "post_moisture":    post_moisture,
+        "moisture_shift":   round(moisture_shift, 2),
+        "moisture_deficit": round(moisture_deficit, 4),
+        "target_volume":    round(sess["volume_applied"], 4),
+        "csv_rows":         csv_rows,
+    })
+
+
+@app.route("/api/bootstrap/cancel", methods=["POST"])
+def api_bootstrap_cancel():
+    """Abort the active bootstrap session without writing any row."""
+    with _bootstrap_lock:
+        was_active = _bootstrap_session["active"]
+        _bootstrap_session.update({
+            "active": False, "phase": "idle", "session_id": None,
+        })
+    print("[BOOTSTRAP] Session cancelled.")
+    return jsonify({"cancelled": was_active})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Startup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1325,6 +1793,7 @@ if __name__ == "__main__":
 
     # 1. Load saved calibration baselines from disk.
     _load_calibration()
+    _load_stress_test_cache()
 
     # 2. Initialise GPIO relay control synchronously before serving requests.
     #    Running it in a background thread caused a race: if a valve was turned

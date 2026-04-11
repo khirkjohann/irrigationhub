@@ -82,13 +82,6 @@
       text-align: center;
     }
 
-    /* ── ML disabled overlay (greyed-out Panel 4 when ML mode is off) ───── */
-    .ml-disabled-overlay {
-      opacity: 0.4;
-      pointer-events: none;
-      user-select: none;
-    }
-
     /* ── ML result box ──────────────────────────────────────────────────── */
     #ml-result-box {
       background: #e9f5ee;
@@ -318,6 +311,17 @@
 
             <!-- Zone test controls — one button per zone, run separately -->
             <div class="d-flex align-items-center gap-2 flex-wrap">
+              <!-- Duration inputs -->
+              <div class="d-flex align-items-center gap-1 me-1">
+                <label class="text-muted small mb-0" style="white-space:nowrap">Water (s)</label>
+                <input type="number" id="test-on-duration" value="120" min="10" max="600" step="5"
+                       style="width:65px" class="form-control form-control-sm">
+              </div>
+              <div class="d-flex align-items-center gap-1 me-2">
+                <label class="text-muted small mb-0" style="white-space:nowrap">Total (s)</label>
+                <input type="number" id="test-total-duration" value="300" min="30" max="1800" step="5"
+                       style="width:65px" class="form-control form-control-sm">
+              </div>
               <button id="btn-z1-test" class="btn btn-sm btn-primary"
                       onclick="startZoneTest('valve1')">
                 <i class="bi bi-play-fill me-1"></i>Zone 1
@@ -361,13 +365,13 @@
             <!-- 2×2 chart grid — one card per sensor / zone -->
             <div class="row g-3">
 
-              <!-- A0 — SEN0308 #1 — Zone 1 -->
+              <!-- A0 — Zone 1 -->
               <div class="col-md-6">
                 <div class="border rounded p-2 h-100">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <span class="fw-semibold small">
                       <span style="color:var(--c0)">●</span>
-                      A0 &nbsp;·&nbsp; SEN0308 #1
+                      A0 &nbsp;·&nbsp; Zone 1
                     </span>
                     <span class="badge bg-primary" style="font-size:.7rem">Zone 1 · Valve 1</span>
                   </div>
@@ -380,13 +384,13 @@
                 </div>
               </div>
 
-              <!-- A1 — SEN0308 #2 — Zone 2 -->
+              <!-- A1 — Zone 2 -->
               <div class="col-md-6">
                 <div class="border rounded p-2 h-100">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <span class="fw-semibold small">
                       <span style="color:var(--c1)">●</span>
-                      A1 &nbsp;·&nbsp; SEN0308 #2
+                      A1 &nbsp;·&nbsp; Zone 2
                     </span>
                     <span class="badge bg-warning text-dark" style="font-size:.7rem">Zone 2 · Valve 2</span>
                   </div>
@@ -399,13 +403,13 @@
                 </div>
               </div>
 
-              <!-- A2 — SEN0193 — Zone 3 -->
+              <!-- A2 — Zone 3 -->
               <div class="col-md-6">
                 <div class="border rounded p-2 h-100">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <span class="fw-semibold small">
                       <span style="color:var(--c2)">●</span>
-                      A2 &nbsp;·&nbsp; SEN0193
+                      A2 &nbsp;·&nbsp; Zone 3
                     </span>
                     <span class="badge bg-success" style="font-size:.7rem">Zone 3 · Valve 3</span>
                   </div>
@@ -418,13 +422,13 @@
                 </div>
               </div>
 
-              <!-- A3 — Generic v1.2 — Zone 4 -->
+              <!-- A3 — Zone 4 -->
               <div class="col-md-6">
                 <div class="border rounded p-2 h-100">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <span class="fw-semibold small">
                       <span style="color:var(--c3)">●</span>
-                      A3 &nbsp;·&nbsp; Generic v1.2
+                      A3 &nbsp;·&nbsp; Zone 4
                     </span>
                     <span class="badge bg-info text-white" style="font-size:.7rem">Zone 4 · Valve 4</span>
                   </div>
@@ -457,6 +461,17 @@
               </span>
             </div>
 
+            <!-- Download CSV (shown only after a test completes) -->
+            <div id="test-csv-wrap" class="text-center mt-3" style="display:none">
+              <a id="test-csv-btn" href="/api/stress-test/export-csv"
+                 class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-download me-1"></i>Download Session CSV
+              </a>
+              <p class="text-muted small mt-1 mb-0">
+                Fill in <code>volume_liters_actual</code> column manually, then use for ML training.
+              </p>
+            </div>
+
           </div>
         </div>
       </div><!-- /Panel 2 -->
@@ -480,13 +495,7 @@
                 <span class="fw-semibold">Regression Prediction · Volume · Duration</span>
                 <span class="badge bg-info text-dark ms-2">For Table 2</span>
               </div>
-              <!-- ML mode toggle: disable during hardware/sensor tests to prevent relay interference -->
-              <div class="form-check form-switch mb-0 d-flex align-items-center gap-2">
-                <input class="form-check-input" type="checkbox" role="switch"
-                       id="ml-mode-toggle" onchange="toggleMLMode(this.checked)"
-                       title="Disable during hardware tests to prevent relay interference">
-                <label class="form-check-label mode-label" for="ml-mode-toggle">ML Active</label>
-              </div>
+
             </div>
           </div>
           <div class="card-body p-3" id="panel4-body">
@@ -668,6 +677,352 @@
 
     </div><!-- /row 3: ML Volumetric Test -->
 
+    <!-- ════════════════════════════════════════════════════════════════════
+         ROW 4 — PANEL 5 — EMITTER FLOW RATE MEASUREMENT
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div class="row g-3 mt-3">
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 5 — EMITTER FLOW RATE MEASUREMENT    (For Table 4)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-lg-6">
+        <div class="card h-100">
+          <div class="card-header">
+            <h6 class="panel-title">Panel 5 — Emitter Flow Rate Measurement</h6>
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+              <div>
+                <span class="fw-semibold">3-Point Emitter Test · Uniformity Check</span>
+                <span class="badge bg-info text-dark ms-2">For Table 4</span>
+              </div>
+            </div>
+          </div>
+          <div class="card-body p-3">
+
+            <!-- Zone selector -->
+            <div class="mb-3">
+              <label class="form-label fw-semibold mb-1">Zone</label>
+              <select id="fr-zone-select" class="form-select form-select-sm" style="max-width:160px">
+                <option value="1">Zone 1</option>
+                <option value="2">Zone 2</option>
+                <option value="3">Zone 3</option>
+                <option value="4">Zone 4</option>
+              </select>
+            </div>
+
+            <!-- 3 volume inputs -->
+            <div class="row g-3 mb-3">
+              <div class="col-4">
+                <label class="form-label small fw-semibold mb-1">
+                  V<sub>1</sub> — First Hole
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="fr-v1" class="form-control"
+                         placeholder="e.g. 28" min="0" step="0.1">
+                  <span class="input-group-text">mL</span>
+                </div>
+              </div>
+              <div class="col-4">
+                <label class="form-label small fw-semibold mb-1">
+                  V<sub>12</sub> — Middle Hole
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="fr-v12" class="form-control"
+                         placeholder="e.g. 27" min="0" step="0.1">
+                  <span class="input-group-text">mL</span>
+                </div>
+              </div>
+              <div class="col-4">
+                <label class="form-label small fw-semibold mb-1">
+                  V<sub>25</sub> — Last Hole
+                </label>
+                <div class="input-group input-group-sm">
+                  <input type="number" id="fr-v25" class="form-control"
+                         placeholder="e.g. 29" min="0" step="0.1">
+                  <span class="input-group-text">mL</span>
+                </div>
+              </div>
+              <div class="col-12">
+                <small class="text-muted">
+                  Collect output from emitter #1, #12, and #25 over
+                  <strong>T = 1 minute</strong> each. N = 25 total emitters.
+                </small>
+              </div>
+            </div>
+
+            <!-- Calculate button -->
+            <button class="btn btn-primary btn-sm mb-3" onclick="calcFlowRate()">
+              <i class="bi bi-calculator me-1"></i>Calculate
+            </button>
+
+            <!-- Result box (hidden until calculated) -->
+            <div id="fr-result-box" class="p-3 rounded border mb-3" style="display:none; background:#f8f9fa;">
+
+              <div class="row text-center mb-3">
+                <div class="col-4">
+                  <div class="text-muted small">Avg Emitter Output</div>
+                  <div class="fw-bold fs-5" id="fr-out-vavg">—</div>
+                  <div class="text-muted small">mL / min / emitter</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted small">Total Flow Rate</div>
+                  <div class="fw-bold fs-5 text-primary" id="fr-out-ftotal">—</div>
+                  <div class="text-muted small">L / min (zone)</div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted small">Pressure Variance ΔP</div>
+                  <div class="fw-bold fs-5" id="fr-out-dp">—</div>
+                  <div class="text-muted small">%</div>
+                </div>
+              </div>
+
+              <hr class="my-2">
+
+              <!-- Uniformity status badge -->
+              <div class="text-center mb-2">
+                <span id="fr-uniformity-badge" class="badge fs-6 px-3 py-2">—</span>
+              </div>
+              <div id="fr-uniformity-msg" class="text-center small text-muted"></div>
+
+              <hr class="my-2">
+
+              <!-- Breakdown -->
+              <div class="row text-center small text-muted">
+                <div class="col-4">V<sub>avg</sub> = (V₁+V₁₂+V₂₅) / 3</div>
+                <div class="col-4">F<sub>total</sub> = V<sub>avg</sub> × 25 / 1000</div>
+                <div class="col-4">ΔP = (V<sub>max</sub>−V<sub>min</sub>) / V<sub>max</sub> × 100</div>
+              </div>
+            </div>
+
+            <!-- Save button (shown after calculation) -->
+            <div id="fr-save-wrap" style="display:none">
+              <button class="btn btn-success btn-sm w-100" onclick="saveFlowRate()">
+                <i class="bi bi-floppy me-1"></i>Save Flow Rate to Zone Settings
+              </button>
+              <div id="fr-save-msg" class="text-muted small mt-2 text-center"></div>
+            </div>
+
+          </div>
+        </div>
+      </div><!-- /Panel 5 -->
+
+    </div><!-- /row 4: Emitter Flow Rate -->
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         ROW 5 — PANEL 6 — BOOTSTRAP DATA COLLECTOR
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div class="row g-3 mt-3">
+
+      <!-- ████████████████████████████████████████████████████████████████
+           PANEL 6 — BOOTSTRAP DATA COLLECTOR    (Builds training_data.csv)
+      ████████████████████████████████████████████████████████████████████ -->
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <div>
+              <h6 class="panel-title">Panel 6 — Bootstrap Data Collector</h6>
+              <span class="text-muted small">
+                Collect labelled training rows for
+                <code>training_data.csv</code> — run before training the RandomForest.
+              </span>
+            </div>
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+              <span class="badge bg-secondary" id="bs-csv-count-badge">
+                <i class="bi bi-table me-1"></i><span id="bs-csv-count">—</span> rows in CSV
+              </span>
+              <!-- Auto-read live sensors toggle -->
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="bs-auto-read" checked>
+                <label class="form-check-label small" for="bs-auto-read">Auto-read sensors</label>
+              </div>
+            </div>
+          </div>
+          <div class="card-body p-3">
+
+            <div class="row g-3">
+
+              <!-- ── STEP 1: Pre-watering inputs ── -->
+              <div class="col-lg-5">
+                <p class="fw-semibold mb-2 text-primary">
+                  <span class="badge bg-primary me-1">1</span> Pre-watering Inputs
+                </p>
+
+                <div class="row g-2 mb-2">
+                  <!-- Zone -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">Zone</label>
+                    <select id="bs-zone" class="form-select form-select-sm">
+                      <option value="1">Zone 1</option>
+                      <option value="2">Zone 2</option>
+                      <option value="3">Zone 3</option>
+                      <option value="4">Zone 4</option>
+                    </select>
+                  </div>
+                  <!-- Target moisture -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">Target Moisture</label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" id="bs-target" class="form-control"
+                             placeholder="60" step="0.1" min="0" max="100" value="60">
+                      <span class="input-group-text">%</span>
+                    </div>
+                  </div>
+                  <!-- Temperature -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">
+                      Temperature
+                      <span id="bs-temp-live" class="badge bg-light text-success border ms-1" style="display:none"></span>
+                    </label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" id="bs-temp" class="form-control"
+                             placeholder="28.0" step="0.1" min="-10" max="60">
+                      <span class="input-group-text">°C</span>
+                    </div>
+                  </div>
+                  <!-- Humidity -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">
+                      Humidity
+                      <span id="bs-hum-live" class="badge bg-light text-success border ms-1" style="display:none"></span>
+                    </label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" id="bs-humidity" class="form-control"
+                             placeholder="70.0" step="0.1" min="0" max="100">
+                      <span class="input-group-text">%</span>
+                    </div>
+                  </div>
+                  <!-- Initial moisture -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">
+                      Initial Moisture
+                      <span id="bs-init-live" class="badge bg-light text-success border ms-1" style="display:none"></span>
+                    </label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" id="bs-initial" class="form-control"
+                             placeholder="38.0" step="0.1" min="0" max="100">
+                      <span class="input-group-text">%</span>
+                    </div>
+                  </div>
+                  <!-- Volume applied -->
+                  <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1">Volume Applied</label>
+                    <div class="input-group input-group-sm">
+                      <input type="number" id="bs-volume" class="form-control"
+                             placeholder="2.5" step="0.01" min="0">
+                      <span class="input-group-text">L</span>
+                    </div>
+                  </div>
+                </div>
+
+                <button class="btn btn-primary btn-sm w-100 mt-1" id="bs-start-btn"
+                        onclick="bsStart()">
+                  <i class="bi bi-play-circle-fill me-1"></i>Record & Start 10-min Timer
+                </button>
+                <small class="text-muted d-block mt-1">
+                  Water the zone manually, then press the button to start the absorption wait.
+                </small>
+              </div>
+
+              <!-- ── STEP 2: Countdown ── -->
+              <div class="col-lg-2 d-flex flex-column align-items-center justify-content-center text-center">
+                <div id="bs-idle-arrow" class="text-muted" style="font-size:2rem">
+                  <i class="bi bi-arrow-right-circle-fill"></i>
+                </div>
+                <!-- Countdown ring (shown during wait) -->
+                <div id="bs-countdown-wrap" style="display:none">
+                  <svg width="90" height="90" viewBox="0 0 90 90">
+                    <circle cx="45" cy="45" r="38" fill="none" stroke="#e9ecef" stroke-width="8"/>
+                    <circle id="bs-ring" cx="45" cy="45" r="38" fill="none"
+                            stroke="#0d6efd" stroke-width="8"
+                            stroke-dasharray="238.76" stroke-dashoffset="0"
+                            transform="rotate(-90 45 45)" style="transition:stroke-dashoffset 1s linear"/>
+                  </svg>
+                  <div class="fw-bold mt-1" id="bs-time-display">10:00</div>
+                  <div class="text-muted small">remaining</div>
+                  <button class="btn btn-outline-danger btn-sm mt-2" onclick="bsCancel()">
+                    <i class="bi bi-x-circle me-1"></i>Cancel
+                  </button>
+                </div>
+                <!-- Ready indicator (shown when timer done) -->
+                <div id="bs-ready-indicator" style="display:none" class="text-success text-center">
+                  <i class="bi bi-check-circle-fill" style="font-size:2.5rem"></i>
+                  <div class="fw-semibold mt-1">Ready!</div>
+                  <div class="small text-muted">Read final moisture</div>
+                </div>
+              </div>
+
+              <!-- ── STEP 3: Post-watering + result ── -->
+              <div class="col-lg-5">
+                <p class="fw-semibold mb-2 text-success">
+                  <span class="badge bg-success me-1">2</span> Post-watering (after 10 min)
+                </p>
+
+                <div class="mb-3">
+                  <label class="form-label small fw-semibold mb-1">
+                    Post Moisture
+                    <span id="bs-post-live" class="badge bg-light text-success border ms-1" style="display:none"></span>
+                  </label>
+                  <div class="input-group input-group-sm" style="max-width:220px">
+                    <input type="number" id="bs-post-moisture" class="form-control"
+                           placeholder="—" step="0.1" min="0" max="100" disabled>
+                    <span class="input-group-text">%</span>
+                    <button class="btn btn-outline-secondary btn-sm" id="bs-read-post-btn"
+                            onclick="bsReadPost()" disabled title="Auto-read from sensor">
+                      <i class="bi bi-arrow-repeat"></i>
+                    </button>
+                  </div>
+                  <small class="text-muted">Enter or read after soil has absorbed the water.</small>
+                </div>
+
+                <button class="btn btn-success btn-sm w-100 mb-3" id="bs-finalise-btn"
+                        onclick="bsFinalise()" disabled>
+                  <i class="bi bi-floppy me-1"></i>Save Row to training_data.csv
+                </button>
+
+                <!-- Result box (shown after finalise) -->
+                <div id="bs-result-box" class="p-3 rounded border" style="display:none; background:#f0fff4;">
+                  <div class="row text-center small">
+                    <div class="col-4">
+                      <div class="text-muted">Moisture Shift</div>
+                      <strong id="bs-out-shift">—</strong>
+                    </div>
+                    <div class="col-4">
+                      <div class="text-muted">Deficit Logged</div>
+                      <strong id="bs-out-deficit">—</strong>
+                    </div>
+                    <div class="col-4">
+                      <div class="text-muted">Volume Logged</div>
+                      <strong id="bs-out-volume">—</strong>
+                    </div>
+                  </div>
+                  <hr class="my-2">
+                  <div class="text-center small">
+                    <span class="text-success fw-semibold">
+                      <i class="bi bi-check-circle-fill me-1"></i>Row saved —
+                      CSV total: <strong id="bs-out-total">—</strong> rows
+                    </span>
+                  </div>
+                </div>
+
+              </div><!-- /step 3 -->
+            </div><!-- /row g-3 inner -->
+
+            <!-- Training readiness indicator -->
+            <hr class="mt-3 mb-2">
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+              <small class="text-muted fw-semibold">Training readiness:</small>
+              <div class="progress flex-grow-1" style="height:10px; max-width:300px">
+                <div id="bs-progress-bar" class="progress-bar" role="progressbar"
+                     style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="20"></div>
+              </div>
+              <small id="bs-progress-label" class="text-muted">0 / 20 rows (min for retraining)</small>
+            </div>
+
+          </div><!-- /card-body -->
+        </div>
+      </div><!-- /Panel 6 -->
+
+    </div><!-- /row 5: Bootstrap Data Collector -->
+
   </div><!-- /container-fluid -->
 
   <!-- TOAST NOTIFICATIONS (top-right corner) -->
@@ -715,10 +1070,10 @@
 
   // CHANNEL_LABELS must match the Python CHANNEL_LABELS dict.
   const CHANNEL_LABELS = {
-    0: 'SEN0308 #1',
-    1: 'SEN0308 #2',
-    2: 'SEN0193',
-    3: 'Generic v1.2',
+    0: 'Zone 1',
+    1: 'Zone 2',
+    2: 'Zone 3',
+    3: 'Zone 4',
   };
 
   // Chart.js line colours — one per ADS1115 channel.
@@ -875,10 +1230,12 @@
   /** Start a 5-min sensor-reliability test for *valve* ('valve1' | 'valve2'). */
   async function startZoneTest(valve) {
     try {
+      const onDur    = Math.max(10,  parseInt(document.getElementById('test-on-duration').value)    || 120);
+      const totalDur = Math.max(onDur + 10, parseInt(document.getElementById('test-total-duration').value) || 300);
       const res  = await fetch('/api/stress-test/start', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ valve }),
+        body:    JSON.stringify({ valve, on_duration: onDur, total_duration: totalDur }),
       });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || 'Could not start test', 'danger'); return; }
@@ -1013,6 +1370,10 @@
     const progWrap = document.getElementById('test-progress-wrap');
     if (progWrap) progWrap.style.display = running ? '' : 'none';
 
+    // Show download button when done, hide when a new test starts.
+    const csvWrap = document.getElementById('test-csv-wrap');
+    if (csvWrap) csvWrap.style.display = running ? 'none' : '';
+
     if (!running) {
       // Clear active channel and remove card highlights.
       _activeTestChannel = null;
@@ -1065,6 +1426,9 @@
 
       // Cache the latest reading for other panels to use (e.g. "Use Live").
       latestSensorData = snapshot;
+
+      // Panel 6: keep live-reading badges in sync with SSE stream.
+      bsFillLive();
 
       /*
         Update the calibration table's "Live V" and "Cal %" columns
@@ -1640,43 +2004,10 @@
             el.value = q.toFixed(2);
         });
       }
-      applyMLMode(data.ml_enabled ?? true);
     } catch (_) {}
   }
 
-  /**
-   * Reflect the ML enabled/disabled state in the toggle checkbox and
-   * Panel 4 card body (greyed-out overlay when disabled).
-   */
-  function applyMLMode(enabled) {
-    const toggle = document.getElementById('ml-mode-toggle');
-    const body   = document.getElementById('panel4-body');
-    if (toggle) toggle.checked = enabled;
-    if (body)   body.classList.toggle('ml-disabled-overlay', !enabled);
-  }
 
-  /**
-   * Called by the ML toggle switch.  POSTs the new state to the backend
-   * then applies it locally so Panel 4 is visually locked when ML is off.
-   */
-  async function toggleMLMode(enabled) {
-    try {
-      const res  = await fetch('/api/ml/mode', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ enabled }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Unknown error');
-      applyMLMode(data.enabled);
-      showToast(
-        data.enabled ? 'ML mode enabled' : 'ML mode disabled — Panel 4 locked out',
-        data.enabled ? 'success' : 'warning'
-      );
-    } catch (e) {
-      showToast(`Failed to toggle ML mode: ${e.message}`, 'danger');
-    }
-  }
 
   /**
    * Fetch the flow rate Q from the backend.
@@ -1747,6 +2078,7 @@
     _fillZoneTarget();
 
     // If a test was already running (e.g. browser refresh), resume polling.
+    // If a test finished previously, show the download button.
     try {
       const status = await (await fetch('/api/stress-test/status')).json();
       if (status.running) {
@@ -1754,9 +2086,341 @@
         testTotalDuration = status.total_duration || 300;
         _setTestUiRunning(true);
         _testPollTimer = setInterval(_pollTestStatus, 3000);
+      } else {
+        // Show CSV button if there's data from a previous session.
+        const hasData = Object.values(status.data || {}).some(arr => arr.length > 0);
+        if (hasData) {
+          const csvWrap = document.getElementById('test-csv-wrap');
+          if (csvWrap) csvWrap.style.display = '';
+          _updateTestCharts(status);
+        }
       }
     } catch (_) {}
+
+    // Panel 6 — restore any running bootstrap session on page load.
+    _bsCheckResume();
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  PANEL 5 — EMITTER FLOW RATE MEASUREMENT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Last calculated result, needed by saveFlowRate(). */
+  let _frResult = null;
+
+  function calcFlowRate() {
+    const v1  = parseFloat(document.getElementById('fr-v1').value);
+    const v12 = parseFloat(document.getElementById('fr-v12').value);
+    const v25 = parseFloat(document.getElementById('fr-v25').value);
+
+    if ([v1, v12, v25].some(v => isNaN(v) || v < 0)) {
+      showToast('Enter valid volumes (≥ 0 mL) for all three emitters.', 'danger');
+      return;
+    }
+
+    const N    = 25;
+    const vAvg = (v1 + v12 + v25) / 3;
+    const fTotalMl = vAvg * N;
+    const fTotalL  = fTotalMl / 1000;
+
+    const vMax = Math.max(v1, v12, v25);
+    const vMin = Math.min(v1, v12, v25);
+    const dP   = vMax > 0 ? ((vMax - vMin) / vMax) * 100 : 0;
+
+    const optimal = dP <= 10;
+
+    // Populate outputs
+    document.getElementById('fr-out-vavg').textContent   = vAvg.toFixed(2) + ' mL';
+    document.getElementById('fr-out-ftotal').textContent = fTotalL.toFixed(4) + ' L/min';
+    document.getElementById('fr-out-dp').textContent     = dP.toFixed(1) + ' %';
+
+    const badge = document.getElementById('fr-uniformity-badge');
+    const msg   = document.getElementById('fr-uniformity-msg');
+    if (optimal) {
+      badge.className = 'badge fs-6 px-3 py-2 bg-success';
+      badge.textContent = '✔ Uniformity Optimal';
+      msg.textContent = `ΔP = ${dP.toFixed(1)}% ≤ 10% — pressure is evenly distributed across all emitters.`;
+    } else {
+      badge.className = 'badge fs-6 px-3 py-2 bg-warning text-dark';
+      badge.textContent = '⚠ Warning: Pressure Drop Detected';
+      msg.textContent = `ΔP = ${dP.toFixed(1)}% > 10% — restrict the bypass valve to equalise pressure.`;
+    }
+
+    document.getElementById('fr-result-box').style.display = '';
+    document.getElementById('fr-save-wrap').style.display  = '';
+    document.getElementById('fr-save-msg').textContent     = '';
+
+    _frResult = { zone_id: parseInt(document.getElementById('fr-zone-select').value), flow_rate_lpm: fTotalL };
+  }
+
+  async function saveFlowRate() {
+    if (!_frResult) return;
+    const saveMsg = document.getElementById('fr-save-msg');
+    saveMsg.textContent = 'Saving…';
+    try {
+      const res  = await fetch('/api/flow-rate-test/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_frResult),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      saveMsg.textContent = `✔ Saved — Zone ${data.zone_id} flow rate set to ${data.flow_rate_lpm} L/min.`;
+      saveMsg.className = 'text-success small mt-2 text-center';
+      showToast(`Zone ${data.zone_id} flow rate saved: ${data.flow_rate_lpm} L/min`, 'success');
+    } catch (err) {
+      saveMsg.textContent = `Error: ${err.message || err}`;
+      saveMsg.className = 'text-danger small mt-2 text-center';
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PANEL 6 — BOOTSTRAP DATA COLLECTOR
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Timer state
+  let _bsTimer       = null;   // setInterval handle
+  let _bsTotalSecs   = 600;
+  let _bsRemainder   = 0;
+  const BS_RING_CIRC = 238.76; // 2π × r (r=38)
+
+  /** Update CSV row count badge and progress bar. */
+  function _bsUpdateCsvCount(n) {
+    if (n == null) return;
+    document.getElementById('bs-csv-count').textContent = n;
+    const pct   = Math.min(100, (n / 20) * 100);
+    const bar   = document.getElementById('bs-progress-bar');
+    const label = document.getElementById('bs-progress-label');
+    bar.style.width  = pct + '%';
+    bar.setAttribute('aria-valuenow', n);
+    bar.className = 'progress-bar ' + (n >= 20 ? 'bg-success' : n >= 10 ? 'bg-warning' : 'bg-danger');
+    label.textContent = `${n} / 20 rows (min for retraining)`;
+  }
+
+  /** Fill sensor inputs from SSE live data when auto-read is on. */
+  function bsFillLive() {
+    if (!document.getElementById('bs-auto-read').checked) return;
+    if (!latestSensorData) return;
+    const zone = parseInt(document.getElementById('bs-zone').value);
+    const t = latestSensorData.temperature;
+    const h = latestSensorData.humidity;
+    const m = latestSensorData[`ch${zone - 1}_pct`] ?? latestSensorData[`calibrated_pct_${zone - 1}`];
+
+    const fmt = (badge, input, val, unit) => {
+      if (val == null) return;
+      badge.textContent = val + unit;
+      badge.style.display = '';
+      input.value = val;
+      input.placeholder = val;
+    };
+    fmt(document.getElementById('bs-temp-live'),  document.getElementById('bs-temp'),    t, ' °C');
+    fmt(document.getElementById('bs-hum-live'),   document.getElementById('bs-humidity'), h, ' %');
+    fmt(document.getElementById('bs-init-live'),  document.getElementById('bs-initial'),  m, ' %');
+  }
+
+  /** Flash live post-moisture reading into the field. */
+  async function bsReadPost() {
+    const zone = parseInt(document.getElementById('bs-zone').value);
+    // Try SSE first, then fall back to a real-time status poll
+    let m = null;
+    if (latestSensorData) {
+      m = latestSensorData[`ch${zone - 1}_pct`] ?? latestSensorData[`calibrated_pct_${zone - 1}`];
+    }
+    if (m == null) {
+      try {
+        const st = await (await fetch('/api/bootstrap/status')).json();
+        // status doesn't carry live moisture — just use SSE value if available
+      } catch (_) {}
+    }
+    const postEl   = document.getElementById('bs-post-moisture');
+    const liveSpan = document.getElementById('bs-post-live');
+    if (m != null) {
+      postEl.value        = m;
+      liveSpan.textContent = m + ' %';
+      liveSpan.style.display = '';
+    } else {
+      showToast('No live reading available — enter manually.', 'warning');
+    }
+  }
+
+  /** Start the 10-minute countdown UI. */
+  function _bsStartCountdown(totalSecs) {
+    _bsTotalSecs = totalSecs;
+    _bsRemainder = totalSecs;
+    document.getElementById('bs-idle-arrow').style.display    = 'none';
+    document.getElementById('bs-countdown-wrap').style.display = '';
+    document.getElementById('bs-ready-indicator').style.display = 'none';
+
+    if (_bsTimer) clearInterval(_bsTimer);
+    _bsTimer = setInterval(async () => {
+      try {
+        const st = await (await fetch('/api/bootstrap/status')).json();
+        _bsRemainder = st.remaining_s ?? 0;
+        _bsUpdateCsvCount(st.csv_rows);
+
+        const mins = Math.floor(_bsRemainder / 60);
+        const secs = Math.floor(_bsRemainder % 60);
+        document.getElementById('bs-time-display').textContent =
+          `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+
+        // Animate ring
+        const offset = BS_RING_CIRC * (_bsRemainder / _bsTotalSecs);
+        document.getElementById('bs-ring').setAttribute('stroke-dashoffset', BS_RING_CIRC - offset);
+
+        if (st.phase === 'ready' || _bsRemainder <= 0) {
+          _bsOnReady();
+        }
+      } catch (_) {}
+    }, 1000);
+  }
+
+  /** Called when the 10-minute timer reaches zero. */
+  function _bsOnReady() {
+    if (_bsTimer) { clearInterval(_bsTimer); _bsTimer = null; }
+    document.getElementById('bs-countdown-wrap').style.display  = 'none';
+    document.getElementById('bs-ready-indicator').style.display = '';
+    // Enable post-moisture inputs
+    document.getElementById('bs-post-moisture').disabled = false;
+    document.getElementById('bs-read-post-btn').disabled  = false;
+    document.getElementById('bs-finalise-btn').disabled   = false;
+    // If auto-read, populate post moisture from live SSE
+    if (document.getElementById('bs-auto-read').checked && latestSensorData) {
+      const zone = parseInt(document.getElementById('bs-zone').value);
+      const m = latestSensorData[`ch${zone - 1}_pct`] ??
+                latestSensorData[`calibrated_pct_${zone - 1}`];
+      if (m != null) {
+        document.getElementById('bs-post-moisture').value = m;
+        document.getElementById('bs-post-live').textContent  = m + ' %';
+        document.getElementById('bs-post-live').style.display = '';
+      }
+    }
+    showToast('10-minute absorption timer complete — enter post moisture and save.', 'success');
+  }
+
+  /** Reset the panel to idle state. */
+  function _bsResetUi() {
+    if (_bsTimer) { clearInterval(_bsTimer); _bsTimer = null; }
+    document.getElementById('bs-idle-arrow').style.display     = '';
+    document.getElementById('bs-countdown-wrap').style.display = 'none';
+    document.getElementById('bs-ready-indicator').style.display = 'none';
+    document.getElementById('bs-start-btn').disabled    = false;
+    document.getElementById('bs-post-moisture').disabled = true;
+    document.getElementById('bs-read-post-btn').disabled = true;
+    document.getElementById('bs-finalise-btn').disabled  = true;
+    document.getElementById('bs-result-box').style.display = 'none';
+  }
+
+  /** POST /api/bootstrap/start */
+  async function bsStart() {
+    const zone   = parseInt(document.getElementById('bs-zone').value);
+    const target = parseFloat(document.getElementById('bs-target').value);
+    const volume = parseFloat(document.getElementById('bs-volume').value);
+    if (isNaN(target) || isNaN(volume) || volume < 0) {
+      showToast('Enter target moisture (%) and volume applied (L) before starting.', 'danger');
+      return;
+    }
+
+    const body = { zone_id: zone, target_moisture: target, volume_applied: volume };
+    // Attach manual sensor values if provided (or auto-read is off)
+    const temp = parseFloat(document.getElementById('bs-temp').value);
+    const hum  = parseFloat(document.getElementById('bs-humidity').value);
+    const init = parseFloat(document.getElementById('bs-initial').value);
+    if (!isNaN(temp))  body.temp             = temp;
+    if (!isNaN(hum))   body.humidity         = hum;
+    if (!isNaN(init))  body.initial_moisture = init;
+
+    document.getElementById('bs-start-btn').disabled = true;
+
+    try {
+      const res  = await fetch('/api/bootstrap/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Populate confirmed readings back into UI
+      document.getElementById('bs-temp').value    = data.temp;
+      document.getElementById('bs-humidity').value = data.humidity;
+      document.getElementById('bs-initial').value  = data.initial_moisture;
+
+      _bsStartCountdown(data.wait_seconds || 600);
+      showToast(`Session started — Zone ${data.zone_id}, initial=${data.initial_moisture}%`, 'info');
+    } catch (err) {
+      document.getElementById('bs-start-btn').disabled = false;
+      showToast(`Start failed: ${err.message || err}`, 'danger');
+    }
+  }
+
+  /** POST /api/bootstrap/cancel */
+  async function bsCancel() {
+    try {
+      await fetch('/api/bootstrap/cancel', { method: 'POST' });
+    } catch (_) {}
+    _bsResetUi();
+    showToast('Bootstrap session cancelled.', 'secondary');
+  }
+
+  /** POST /api/bootstrap/finalise */
+  async function bsFinalise() {
+    const post = parseFloat(document.getElementById('bs-post-moisture').value);
+    if (isNaN(post) || post < 0 || post > 100) {
+      showToast('Enter a valid post moisture % (0–100).', 'danger');
+      return;
+    }
+    document.getElementById('bs-finalise-btn').disabled = true;
+
+    try {
+      const res  = await fetch('/api/bootstrap/finalise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_moisture: post }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Show result
+      const shiftSign  = data.moisture_shift >= 0 ? '+' : '';
+      document.getElementById('bs-out-shift').textContent   = shiftSign + data.moisture_shift.toFixed(1) + ' %';
+      document.getElementById('bs-out-deficit').textContent = data.moisture_deficit.toFixed(2) + ' %';
+      document.getElementById('bs-out-volume').textContent  = data.target_volume.toFixed(3) + ' L';
+      document.getElementById('bs-out-total').textContent   = data.csv_rows;
+      document.getElementById('bs-result-box').style.display = '';
+      _bsUpdateCsvCount(data.csv_rows);
+      _bsResetUi();
+      showToast(`Row saved — CSV now has ${data.csv_rows} training rows.`, 'success');
+    } catch (err) {
+      document.getElementById('bs-finalise-btn').disabled = false;
+      showToast(`Save failed: ${err.message || err}`, 'danger');
+    }
+  }
+
+  /** Called from boot: check if a session was already running (browser refresh). */
+  async function _bsCheckResume() {
+    try {
+      const st = await (await fetch('/api/bootstrap/status')).json();
+      _bsUpdateCsvCount(st.csv_rows);
+      if (st.active) {
+        // Restore inputs from the active session
+        if (st.zone_id)          document.getElementById('bs-zone').value    = st.zone_id;
+        if (st.target_moisture)  document.getElementById('bs-target').value   = st.target_moisture;
+        if (st.initial_moisture) document.getElementById('bs-initial').value  = st.initial_moisture;
+        if (st.temp)             document.getElementById('bs-temp').value     = st.temp;
+        if (st.humidity)         document.getElementById('bs-humidity').value = st.humidity;
+        if (st.volume_applied)   document.getElementById('bs-volume').value   = st.volume_applied;
+        document.getElementById('bs-start-btn').disabled = true;
+
+        if (st.phase === 'ready') {
+          _bsOnReady();
+        } else {
+          _bsStartCountdown(st.remaining_s + st.elapsed_s);
+          // Immediately set correct offset
+          _bsRemainder = st.remaining_s;
+        }
+      }
+    } catch (_) {}
+  }
 
   </script>
 </body>

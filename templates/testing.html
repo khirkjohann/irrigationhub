@@ -54,28 +54,60 @@
     </div>
 </section>
 
+
 <section class="card">
-    <h2>Diagnostics</h2>
-    <div class="diag-grid">
-        <div class="diag-box">
-            <h3>Raw ADS1115 Readout</h3>
-            <p class="no-margin">Raw Value: <strong id="adcValue">--</strong></p>
-            <p class="voltage-row">Voltage: <strong id="adcVoltage">-- V</strong></p>
-            <button class="btn secondary" onclick="refreshRawReadout()">Refresh Readout</button>
-            <p class="small-text" id="rawError"></p>
-        </div>
-        <div class="diag-box">
-            <h3>I2C Hardware Scanner</h3>
-            <button class="btn" onclick="runI2CScan()">Scan I2C Bus</button>
-            <p class="small-text" id="i2cResult">No scan yet.</p>
-        </div>
-        <div class="diag-box">
-            <h3>Sequential Relay Test</h3>
-            <button class="btn" onclick="runRelayTest()">Run Relay Test (1 to 4)</button>
-            <p class="small-text" id="relayResult">No test yet.</p>
-        </div>
+    <h2>Irrigation Queue</h2>
+    <p class="small-text">Irrigations are processed one at a time in order. Queue an irrigation from a zone's detail page.</p>
+    <div class="history-wrap" style="overflow-x:auto;">
+        <table class="history-table" id="irrQueueTable">
+            <thead>
+                <tr>
+                    <th>Zone</th>
+                    <th>Added</th>
+                    <th>Init. Moisture</th>
+                    <th>Volume (L)</th>
+                    <th>Duration (min)</th>
+                    <th>Est. Complete</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="muted-cell">No irrigations queued.</td></tr></tbody>
+        </table>
     </div>
 </section>
+
+<section class="card">
+    <div class="section-header">
+        <h2>Completed Irrigations</h2>
+        <a class="btn secondary" href="/export/irrigation-log.csv" style="font-size:0.85rem;padding:5px 12px;">Download CSV</a>
+    </div>
+    <p class="small-text">Post-irrigation moisture is sampled ~10 s after the valve closes. Temperature &amp; humidity are captured at completion time. All columns are included in the CSV for ML training.</p>
+    <div class="history-wrap" style="overflow-x:auto;">
+        <table class="history-table" id="irrCompletedTable">
+            <thead>
+                <tr>
+                    <th>Zone</th>
+                    <th>Source</th>
+                    <th>Added</th>
+                    <th>Started</th>
+                    <th>Completed</th>
+                    <th>Volume (L)</th>
+                    <th>Est. Duration (min)</th>
+                    <th>Actual Duration (min)</th>
+                    <th>Init. Moisture</th>
+                    <th>Post Moisture</th>
+                    <th>Temp (°C)</th>
+                    <th>Humidity (%)</th>
+                    <th>Crop Target</th>
+                    <th>Target Moisture</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="14" class="muted-cell">No completed irrigations yet.</td></tr></tbody>
+        </table>
+    </div>
+</section>
+
 {% endblock %}
 
 {% block scripts %}

@@ -11,10 +11,10 @@
     <header class="topbar">
         <div class="brand">Causwagan Norte Farm</div>
         <nav class="topnav" aria-label="Main navigation">
-            <a href="{{ url_for('home_page') }}" class="{% if active_page == 'home' %}active{% endif %}">Home</a>
-            <a href="{{ url_for('testing_page') }}" class="{% if active_page == 'testing' %}active{% endif %}">Testing</a>
-            <a href="{{ url_for('analytics_page') }}" class="{% if active_page == 'analytics' %}active{% endif %}">Analytics</a>
-            <a href="{{ url_for('hardware_page') }}" class="{% if active_page == 'hardware' %}active{% endif %}">Hardware</a>
+            <a href="{{ url_for('pages.home_page') }}" class="{% if active_page == 'home' %}active{% endif %}">Home</a>
+            <a href="{{ url_for('pages.testing_page') }}" class="{% if active_page == 'testing' %}active{% endif %}">Testing</a>
+            <a href="{{ url_for('pages.analytics_page') }}" class="{% if active_page == 'analytics' %}active{% endif %}">Analytics</a>
+            <a href="{{ url_for('pages.hardware_page') }}" class="{% if active_page == 'hardware' %}active{% endif %}">Hardware</a>
         </nav>
     </header>
 

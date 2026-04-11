@@ -13,6 +13,20 @@
 </section>
 
 <section class="card">
+    <h2>Pi CPU Temperature</h2>
+    <div class="diag-box">
+        <div class="meta-row">
+            <span>CPU Temperature</span>
+            <strong id="cpuTempValue">--</strong>
+        </div>
+        <div class="actions" style="margin-top:10px">
+            <button class="btn secondary" onclick="queryCpuTemp()">Query Temperature</button>
+        </div>
+        <p class="small-text" id="cpuTempError"></p>
+    </div>
+</section>
+
+<section class="card">
     <h2>Power</h2>
     <p class="small-text">Use Safe Shutdown before unplugging power to avoid SD card corruption.</p>
     <div class="actions">
@@ -68,12 +82,86 @@
 </section>
 
 <section class="card">
+    <h2>Cooling Fan (GPIO14)</h2>
+    <div class="diag-box">
+        <div class="meta-row"><span>CPU Temperature</span><strong id="fanTempValue">--</strong></div>
+        <div class="meta-row"><span>Fan Speed</span><strong id="fanDutyValue">--</strong></div>
+        <div class="meta-row"><span>Status</span><strong id="fanMessage">--</strong></div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Diagnostics</h2>
+    <div class="diag-grid">
+        <div class="diag-box">
+            <h3>Sequential Relay Test</h3>
+            <button class="btn" onclick="runRelayTest()">Run Relay Test (1 to 4)</button>
+            <p class="small-text" id="relayResult">No test yet.</p>
+        </div>
+    </div>
+</section>
+
+<section class="card">
     <h2>Thesis Dashboard (Port 5002)</h2>
     <p class="small-text">Start or stop the standalone thesis testing &amp; diagnostics server. Do not run GPIO-intensive tests while the main app is actively controlling valves.</p>
     <div class="actions">
         <button class="btn" id="thesisToggleBtn" type="button" disabled>Loading...</button>
     </div>
     <p class="small-text" id="thesisMessage">Checking status...</p>
+</section>
+
+<section class="card">
+    <h2>WiFi Configuration</h2>
+    <p class="small-text">Connect to a nearby network or switch back to Hotspot mode.</p>
+
+    <!-- Current status -->
+    <div class="diag-box" style="margin-bottom:14px;">
+        <div class="meta-row">
+            <span>Active Connection</span>
+            <strong id="wifiActiveConn">Loading…</strong>
+        </div>
+        <div class="meta-row">
+            <span>IP Address (wlan0)</span>
+            <strong id="wifiActiveIp">--</strong>
+        </div>
+        <div class="actions" style="margin-top:10px;gap:8px;flex-wrap:wrap;">
+            <button class="btn secondary" id="wifiScanBtn" type="button">Scan Networks</button>
+            <button class="btn secondary" id="wifiHotspotBtn" type="button">Use Hotspot</button>
+        </div>
+    </div>
+
+    <!-- Scan results -->
+    <div id="wifiScanResults" style="display:none;margin-bottom:14px;">
+        <p class="small-text"><strong>Available networks</strong> — click one to select it.</p>
+        <div id="wifiNetworkList"></div>
+    </div>
+
+    <!-- Connect form -->
+    <div class="zone-controls" style="max-width:380px;">
+        <label for="wifiSsid">Selected SSID</label>
+        <input type="text" id="wifiSsid" maxlength="32" placeholder="Select from scan or type manually" autocomplete="off" />
+
+        <label for="wifiPassword" style="margin-top:8px;">Password <span class="small-text">(leave blank for open networks)</span></label>
+        <div style="position:relative;">
+            <input type="password" id="wifiPassword" maxlength="63" placeholder="Minimum 8 characters"
+                   autocomplete="new-password" style="width:100%;padding-right:72px;" />
+            <button type="button" id="wifiShowToggle"
+                    style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:0.78rem;background:none;border:1px solid #ccc;border-radius:4px;padding:2px 7px;cursor:pointer;">
+                Show
+            </button>
+        </div>
+
+        <div class="actions" style="margin-top:12px;">
+            <button class="btn" id="wifiConnectBtn" type="button">Connect &amp; Save</button>
+        </div>
+        <p class="small-text" id="wifiMsg" style="margin-top:8px;min-height:1.4em;"></p>
+    </div>
+
+    <!-- Saved irr-wifi-* profiles -->
+    <div style="margin-top:16px;">
+        <p class="small-text"><strong>Saved profiles</strong></p>
+        <div id="wifiProfilesList"><span class="small-text">Loading…</span></div>
+    </div>
 </section>
 {% endblock %}
 

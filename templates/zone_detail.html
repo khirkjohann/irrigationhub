@@ -19,6 +19,14 @@
             <h3>Valve Status</h3>
             <p id="zoneValveStatus">--</p>
         </div>
+        <div class="data-box">
+            <h3>Flow Rate</h3>
+            <p id="zoneFlowRate">-- L/min</p>
+        </div>
+        <div class="data-box">
+            <h3>Irrigation Mode</h3>
+            <p id="zoneIrrMode">--</p>
+        </div>
     </div>
     <div class="gauge" style="margin-top:12px;">
         <div class="gauge-fill" id="zoneGaugeFill" style="width:0%;"></div>
@@ -26,39 +34,92 @@
 </section>
 
 <section class="card">
-    <h2>Zone Settings and Control</h2>
-    <div class="diag-grid">
-        <div class="diag-box">
-            <h3>Profile Settings</h3>
-            <div class="zone-controls">
-                <label>Soil Baseline</label>
-                <div style="display:flex;gap:6px;align-items:center;">
-                    <select id="zoneBaselineSelect" style="flex:1;"></select>
-                    <button class="btn secondary" type="button" id="deleteBaselineBtn"
-                            onclick="deleteSelectedBaseline()"
-                            title="Delete the selected baseline from the database">Delete</button>
-                </div>
-                <label>Crop Target</label>
-                <select id="zoneCropTargetSelect"></select>
-                <button class="btn secondary" id="saveZoneProfileBtn" type="button">Save Zone Assignment</button>
-                <p class="small-text" id="zoneSaveMsg">No changes yet.</p>
-            </div>
-        </div>
-        <div class="diag-box">
-            <h3>Manual Valve Control</h3>
-            <div class="zone-controls">
-                <button class="toggle-btn toggle-off" id="zoneToggleBtn" type="button">Valve OFF (Tap to ON)</button>
-                <label>Failsafe timer (minutes)</label>
-                <input type="number" id="zoneTimerInput" min="0" value="10">
-                <p class="small-text" id="zoneTimerMsg">No active timer</p>
-            </div>
-        </div>
+    <h2>Zone Settings</h2>
+    <div class="zone-controls" style="max-width:320px;">
+        <label>Crop Target</label>
+        <select id="zoneCropTargetSelect"></select>
+        <button class="btn secondary" id="saveZoneProfileBtn" type="button">Save Zone Assignment</button>
+        <p class="small-text" id="zoneSaveMsg">No changes yet.</p>
     </div>
 </section>
 
 <section class="card">
-    <h2>Recent Moisture History</h2>
-    <div class="history-wrap">
+    <h2>Irrigation Mode</h2>
+    <div class="irr-mode-tabs">
+        <button class="irr-tab active" data-mode="ml" type="button">ML Prediction</button>
+        <button class="irr-tab" data-mode="scheduled" type="button">Scheduled</button>
+        <button class="irr-tab" data-mode="manual" type="button">Manual Liters</button>
+    </div>
+
+    <div class="irr-panel" id="irrPanelMl">
+        <p id="mlNoModelMsg" class="small-text" style="display:none;color:#c0392b;">
+            No trained ML model found. Collect training data using <strong>Panel 6</strong> on the
+            thesis dashboard, then run <code>cron_retrain.py</code> to train the model.
+        </p>
+        <p class="small-text">Predict optimal irrigation volume based on current soil moisture and crop target.</p>
+        <button class="btn" id="mlPredictBtn" type="button">Calculate Recommendation</button>
+        <div id="mlPredictResult" style="display:none;">
+            <div class="env-grid" style="margin-top:12px;">
+                <div class="data-box">
+                    <h3>Deficit</h3>
+                    <p id="mlDeficit">-- %</p>
+                </div>
+                <div class="data-box">
+                    <h3>Recommended</h3>
+                    <p id="mlLiters">-- L</p>
+                </div>
+                <div class="data-box">
+                    <h3>Duration</h3>
+                    <p id="mlMinutes">-- min</p>
+                </div>
+            </div>
+            <button class="btn" id="mlExecuteBtn" type="button" style="margin-top:12px;">Start Irrigation</button>
+        </div>
+        <p class="small-text" id="mlMsg" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="irr-panel" id="irrPanelScheduled" style="display:none;">
+        <p class="small-text">Set a recurring weekly schedule for automatic irrigation.</p>
+        <div class="zone-controls" style="max-width:440px;">
+            <label>Days</label>
+            <div class="dow-grid">
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="1"> Mon</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="2"> Tue</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="3"> Wed</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="4"> Thu</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="5"> Fri</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="6"> Sat</label>
+                <label class="dow-chip"><input type="checkbox" class="dow-check" value="0"> Sun</label>
+            </div>
+            <label style="margin-top:8px;">Time Slots</label>
+            <div id="schedSlots"></div>
+            <button class="btn secondary" id="addSlotBtn" type="button" style="margin-top:6px;font-size:0.85rem;">+ Add Time Slot</button>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+                <button class="btn" id="schedSaveBtn" type="button">Save Schedule</button>
+                <button class="btn secondary" id="schedClearBtn" type="button">Clear</button>
+            </div>
+        </div>
+        <p class="small-text" id="schedMsg" style="margin-top:10px;"></p>
+    </div>
+
+    <div class="irr-panel" id="irrPanelManual" style="display:none;">
+        <p class="small-text">Start irrigation now for a specific volume.</p>
+        <div class="zone-controls" style="max-width:320px;">
+            <label>Volume (L)</label>
+            <input type="number" id="manualLiters" min="0.1" step="0.1" value="2" />
+            <p class="small-text" id="manualDurationPreview"></p>
+            <button class="btn" id="manualStartBtn" type="button">Queue Irrigation</button>
+        </div>
+        <p class="small-text" id="manualMsg" style="margin-top:8px;"></p>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-header">
+        <h2>Recent Moisture History</h2>
+        <button class="btn-minimize" id="minimizeMoistureBtn" type="button">&#9660;</button>
+    </div>
+    <div class="history-wrap" id="zoneHistoryWrap">
         <table class="history-table" id="zoneHistoryTable">
             <thead>
                 <tr>
@@ -72,8 +133,11 @@
 </section>
 
 <section class="card">
-    <h2>Recent Control Events</h2>
-    <div class="history-wrap">
+    <div class="section-header">
+        <h2>Recent Control Events</h2>
+        <button class="btn-minimize" id="minimizeEventsBtn" type="button">&#9660;</button>
+    </div>
+    <div class="history-wrap" id="zoneEventsWrap">
         <table class="history-table" id="zoneEventTable">
             <thead>
                 <tr>
