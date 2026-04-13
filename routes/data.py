@@ -12,18 +12,13 @@ from flask import Blueprint, Response, jsonify, request
 from core.config import (
     ADS_SAMPLES,
     ADS_SAMPLE_DELAY,
-    AUTO_CONTROL_ENABLED,
-    AUTO_FAILSAFE_MINUTES,
-    AUTO_HYSTERESIS,
-    AUTO_PREDICT_MINUTES,
-    CONTROL_LOOP_SECONDS,
     ML_MODEL_PATH,
     SENSOR_POLL_SECONDS,
     VALID_ZONES,
 )
 from core.db import get_db
 from hardware.gpio_control import get_gpio_status, get_fan_status
-from hardware.irrigation import _valve_lock, _valve_manual_until, get_latest_env
+from hardware.irrigation import get_latest_env
 from hardware.sensors import get_sensor_snapshot
 from core.utils import clamp
 
@@ -85,8 +80,6 @@ def dashboard_payload() -> dict:
     for zid in sorted(VALID_ZONES):
         _z = zone_map.get(zid)
         z  = dict(_z) if _z else {}
-        with _valve_lock:
-            until = _valve_manual_until.get(zid)
         zone_payload.append({
             "zone_id":             zid,
             "moisture":            latest[f"soil_moisture_{zid}"] if latest else None,
@@ -98,21 +91,18 @@ def dashboard_payload() -> dict:
             "crop_target_name":    z.get("crop_target_name"),
             "crop_target_voltage": z.get("crop_target_voltage"),
             "flow_rate_lpm":       z.get("flow_rate_lpm", 3.0),
+            "threshold_gap":       z.get("threshold_gap", 5.0),
             "valve_status":        valve_map.get(zid, "OFF"),
-            "manual_until":        until.isoformat() if until else None,
             "irr_mode":            z.get("irr_mode", "ml"),
         })
 
     valve_payload = []
-    with _valve_lock:
-        for v in valves:
-            until = _valve_manual_until.get(v["valve_id"])
-            valve_payload.append({
-                "valve_id":      v["valve_id"],
-                "status":        v["status"],
-                "water_flowing": v["status"] == "ON",
-                "manual_until":  until.isoformat() if until else None,
-            })
+    for v in valves:
+        valve_payload.append({
+            "valve_id":      v["valve_id"],
+            "status":        v["status"],
+            "water_flowing": v["status"] == "ON",
+        })
 
     uptime    = datetime.now() - APP_START_TIME
     h, rem    = divmod(int(uptime.total_seconds()), 3600)
@@ -136,10 +126,7 @@ def dashboard_payload() -> dict:
         "soil_baselines": [_baseline_dict(r) for r in baselines],
         "crop_targets":   [_crop_target_dict(r) for r in crop_targets],
         "runtime": {
-            "sensor_poll_seconds":  SENSOR_POLL_SECONDS,
-            "auto_control_enabled": AUTO_CONTROL_ENABLED,
-            "predict_minutes":      AUTO_PREDICT_MINUTES,
-            "hysteresis":           AUTO_HYSTERESIS,
+            "sensor_poll_seconds": SENSOR_POLL_SECONDS,
         },
     }
 
@@ -247,22 +234,11 @@ def api_zone_predict(zone_id):
 
 @bp.route("/api/system/status")
 def api_system_status():
-    with _valve_lock:
-        overrides = {zid: until.isoformat()
-                     for zid, until in _valve_manual_until.items()
-                     if until > datetime.now()}
     return jsonify({
-        "sensor_mode":          "hardware-only",
-        "sensor_status":        get_sensor_snapshot(),
-        "relay_status":         get_gpio_status(),
-        "auto_control_enabled": AUTO_CONTROL_ENABLED,
-        "manual_overrides":     overrides,
-        "control": {
-            "predict_minutes":      AUTO_PREDICT_MINUTES,
-            "hysteresis":           AUTO_HYSTERESIS,
-            "failsafe_minutes":     AUTO_FAILSAFE_MINUTES,
-            "control_loop_seconds": CONTROL_LOOP_SECONDS,
-        },
+        "sensor_mode":   "hardware-only",
+        "sensor_status": get_sensor_snapshot(),
+        "relay_status":  get_gpio_status(),
+        "fan_status":    get_fan_status(),
     })
 
 

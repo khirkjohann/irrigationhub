@@ -848,23 +848,14 @@
 
                 <div class="row g-2 mb-2">
                   <!-- Zone -->
-                  <div class="col-6">
+                  <div class="col-12">
                     <label class="form-label small fw-semibold mb-1">Zone</label>
-                    <select id="bs-zone" class="form-select form-select-sm">
+                    <select id="bs-zone" class="form-select form-select-sm" onchange="bsOnZoneChange()">
                       <option value="1">Zone 1</option>
                       <option value="2">Zone 2</option>
                       <option value="3">Zone 3</option>
                       <option value="4">Zone 4</option>
                     </select>
-                  </div>
-                  <!-- Target moisture -->
-                  <div class="col-6">
-                    <label class="form-label small fw-semibold mb-1">Target Moisture</label>
-                    <div class="input-group input-group-sm">
-                      <input type="number" id="bs-target" class="form-control"
-                             placeholder="60" step="0.1" min="0" max="100" value="60">
-                      <span class="input-group-text">%</span>
-                    </div>
                   </div>
                   <!-- Temperature -->
                   <div class="col-6">
@@ -2099,6 +2090,8 @@
 
     // Panel 6 — restore any running bootstrap session on page load.
     _bsCheckResume();
+    // Load target moisture for the default zone.
+    bsOnZoneChange();
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -2182,7 +2175,23 @@
   let _bsTimer       = null;   // setInterval handle
   let _bsTotalSecs   = 600;
   let _bsRemainder   = 0;
+  let _bsTargetMoisture = null;  // loaded from DB on zone change
   const BS_RING_CIRC = 238.76; // 2π × r (r=38)
+
+  /** Fetch the zone's target_moisture from the main DB (background metadata only). */
+  async function bsOnZoneChange() {
+    const zone = parseInt(document.getElementById('bs-zone').value);
+    // Silently fetch target moisture in the background — stored in session, not shown
+    try {
+      const res  = await fetch(`/api/bootstrap/zone-info/${zone}`);
+      const data = await res.json();
+      _bsTargetMoisture = (res.ok && data.target_moisture != null) ? data.target_moisture : null;
+    } catch (_) {
+      _bsTargetMoisture = null;
+    }
+    // Auto-fill sensor readings for the new zone
+    bsFillLive();
+  }
 
   /** Update CSV row count badge and progress bar. */
   function _bsUpdateCsvCount(n) {
@@ -2313,14 +2322,13 @@
   /** POST /api/bootstrap/start */
   async function bsStart() {
     const zone   = parseInt(document.getElementById('bs-zone').value);
-    const target = parseFloat(document.getElementById('bs-target').value);
     const volume = parseFloat(document.getElementById('bs-volume').value);
-    if (isNaN(target) || isNaN(volume) || volume < 0) {
-      showToast('Enter target moisture (%) and volume applied (L) before starting.', 'danger');
+    if (isNaN(volume) || volume < 0) {
+      showToast('Enter the volume applied (L) before starting.', 'danger');
       return;
     }
 
-    const body = { zone_id: zone, target_moisture: target, volume_applied: volume };
+    const body = { zone_id: zone, volume_applied: volume };
     // Attach manual sensor values if provided (or auto-read is off)
     const temp = parseFloat(document.getElementById('bs-temp').value);
     const hum  = parseFloat(document.getElementById('bs-humidity').value);
@@ -2341,6 +2349,7 @@
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       // Populate confirmed readings back into UI
+      if (data.target_moisture != null) _bsTargetMoisture = data.target_moisture;
       document.getElementById('bs-temp').value    = data.temp;
       document.getElementById('bs-humidity').value = data.humidity;
       document.getElementById('bs-initial').value  = data.initial_moisture;
@@ -2404,7 +2413,7 @@
       if (st.active) {
         // Restore inputs from the active session
         if (st.zone_id)          document.getElementById('bs-zone').value    = st.zone_id;
-        if (st.target_moisture)  document.getElementById('bs-target').value   = st.target_moisture;
+        if (st.target_moisture != null) _bsTargetMoisture = st.target_moisture;
         if (st.initial_moisture) document.getElementById('bs-initial').value  = st.initial_moisture;
         if (st.temp)             document.getElementById('bs-temp').value     = st.temp;
         if (st.humidity)         document.getElementById('bs-humidity').value = st.humidity;

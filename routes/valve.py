@@ -1,26 +1,12 @@
 """
-routes/valve.py — Valve toggle (form POST) and valve set (JSON API).
+routes/valve.py — Valve set (JSON API), used by diagnostics routes.
 """
-from flask import Blueprint, jsonify, redirect, request, url_for
+from flask import Blueprint, jsonify, request
 
 from core.config import VALID_ZONES
-from core.db import get_db
 from hardware.irrigation import set_valve
 
 bp = Blueprint("valve", __name__)
-
-
-@bp.route("/toggle_valve/<int:valve_id>", methods=["POST"])
-def toggle_valve(valve_id):
-    conn = get_db()
-    row  = conn.execute("SELECT status FROM valve_status WHERE valve_id=?", (valve_id,)).fetchone()
-    conn.close()
-    if not row:
-        return redirect(url_for("pages.home_page"))
-    new_state  = "ON" if row["status"] == "OFF" else "OFF"
-    auto_close = request.form.get("auto_close_minutes", type=int)
-    set_valve(valve_id, new_state, auto_close if new_state == "ON" else None)
-    return redirect(url_for("pages.home_page"))
 
 
 @bp.route("/api/valve/<int:valve_id>", methods=["POST"])

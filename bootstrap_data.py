@@ -38,6 +38,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────────────
 
 TRAINING_CSV   = os.getenv("IRRIGATION_TRAINING_CSV", "/home/pi/training_data.csv")
+DB_PATH        = os.getenv("IRRIGATION_DB",            "/home/pi/irrigation_data.db")
 WAIT_SECONDS   = int(os.getenv("BOOTSTRAP_WAIT_SECONDS", "600"))   # 10 minutes
 SKIP_WAIT      = os.getenv("SKIP_WAIT", "0") == "1"               # set for quick dev
 
@@ -54,12 +55,26 @@ CSV_HEADER = [
 
 VALID_ZONES = {1, 2, 3, 4}
 
-CROP_DEFAULTS = {
-    1: 50.0,   # Zone 1 — Generic probe
-    2: 55.0,   # Zone 2 — SEN0308 #2
-    3: 55.0,   # Zone 3 — SEN0308 #1
-    4: 60.0,   # Zone 4 — SEN0193 premium
-}
+
+def _get_target_moisture_default(zone_id: int) -> float:
+    """
+    Return the zone's target_moisture (%) from the main DB, or 50.0 if unset.
+    Used only as a suggested default in the CLI prompt.
+    """
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT target_moisture FROM zone_profile WHERE zone_id = ?",
+            (zone_id,),
+        ).fetchone()
+        conn.close()
+        if row and row["target_moisture"] is not None:
+            return float(row["target_moisture"])
+    except Exception as exc:
+        print(f"[BOOTSTRAP] Could not read target_moisture for Zone {zone_id}: {exc}")
+    return 50.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +179,7 @@ def _read_soil_moisture_pct(zone_id: int):
 #  Input helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ask_float(prompt: str, lo: float, hi: float, default: float = None) -> float:
+def _ask_float(prompt: str, lo: float, hi: float, default: float | None = None) -> float:
     while True:
         hint = f" [default {default}]" if default is not None else ""
         raw = input(f"{prompt}{hint}: ").strip()
@@ -179,7 +194,7 @@ def _ask_float(prompt: str, lo: float, hi: float, default: float = None) -> floa
             print("  ✗ Please enter a numeric value.")
 
 
-def _ask_int(prompt: str, choices: set, default: int = None) -> int:
+def _ask_int(prompt: str, choices: set, default: int | None = None) -> int:
     while True:
         hint = f" [default {default}]" if default is not None else ""
         raw = input(f"{prompt} ({'/'.join(str(c) for c in sorted(choices))}){hint}: ").strip()
@@ -210,7 +225,7 @@ def run_session(zone_id: int, dummy_mode: bool):
     # ── STEP 1: Collect pre-watering inputs ──────────────────────────────────
     target_crop_moisture = _ask_float(
         "Target crop moisture (%)", 0.0, 100.0,
-        default=CROP_DEFAULTS.get(zone_id, 50.0),
+        default=_get_target_moisture_default(zone_id),
     )
 
     if dummy_mode:
@@ -220,7 +235,7 @@ def run_session(zone_id: int, dummy_mode: bool):
     else:
         print("  Reading BME280 …", end=" ", flush=True)
         temp, humidity = _read_bme280()
-        if temp is None:
+        if temp is None or humidity is None:
             print("FAILED — enter manually.")
             temp     = _ask_float("Temperature (°C)", -10.0, 60.0)
             humidity = _ask_float("Humidity (%)", 0.0, 100.0)

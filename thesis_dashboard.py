@@ -345,6 +345,24 @@ def _sync_channel_to_main_db(ch):
             "UPDATE zone_profile SET soil_baseline_id = ? WHERE zone_id = ?",
             (baseline_id, zone_id),
         )
+        # 4. If the zone already has a crop target, recalculate target_moisture.
+        ct_row = conn.execute(
+            """SELECT ct.target_voltage
+               FROM zone_profile zp
+               JOIN crop_target ct ON ct.id = zp.crop_target_id
+               WHERE zp.zone_id = ?""",
+            (zone_id,),
+        ).fetchone()
+        if ct_row is not None:
+            target_v = ct_row[0]
+            span = float(dry_v) - float(wet_v)
+            if abs(span) >= 1e-9:
+                pct = max(0.0, min(100.0, ((float(dry_v) - float(target_v)) / span) * 100.0))
+                target_moisture = round(pct, 1)
+                conn.execute(
+                    "UPDATE zone_profile SET target_moisture = ? WHERE zone_id = ?",
+                    (target_moisture, zone_id),
+                )
         conn.commit()
         conn.close()
         print(f"[SYNC] Baseline '{name}' (id={baseline_id}) → zone {zone_id}")
@@ -415,6 +433,11 @@ def _read_hardware():
                 samples.append(float(AnalogIn(ads, ch).voltage))
                 time.sleep(ADS_SMOOTHING_DELAY)
 
+            # Drop the single highest sample before averaging — relay-coil
+            # ground contamination tends to produce one large spike per burst.
+            if len(samples) > 2:
+                samples.remove(max(samples))
+
             result["channels"][ch]["voltage"] = round(sum(samples) / len(samples), 4)
 
     except Exception as exc:
@@ -468,12 +491,40 @@ def _sensor_poll_worker():
 
     The _poll_wake event allows the mode-change endpoint to trigger an
     immediate poll so the chart does not stall waiting for a 10-minute timeout.
+
+    Skips hardware reads while the stress test has a valve open: the shared
+    12 V relay-coil ground path corrupts ADS1115 readings during that window,
+    and concurrent I2C access from two threads causes bus errors.  The last
+    known-good snapshot is re-broadcast instead so SSE clients stay alive.
     """
     while True:
         _poll_wake.clear()
 
         with _logging_mode_lock:
             interval = LOGGING_INTERVALS.get(_logging_mode, 600)
+
+        # Hold off if a stress-test valve is open — relay ground interference
+        # makes all sensor reads unreliable and we must avoid I2C contention.
+        with _stress_test_lock:
+            valve_open = _stress_test["running"] and _stress_test["phase"] == "watering"
+
+        if valve_open:
+            # Re-broadcast the last cached reading so SSE clients don't stall.
+            with _latest_reading_lock:
+                cached = dict(_latest_reading)
+            if cached:
+                payload = json.dumps(cached, default=str)
+                with _sse_clients_lock:
+                    stale = []
+                    for q in _sse_clients:
+                        try:
+                            q.put_nowait(payload)
+                        except queue.Full:
+                            stale.append(q)
+                    for q in stale:
+                        _sse_clients.remove(q)
+            _poll_wake.wait(timeout=10)
+            continue
 
         snapshot = _read_hardware()
 
@@ -894,6 +945,12 @@ def _run_stress_test(valve_key, on_duration=120, total_duration=300, collect_int
             if not valve_off_done and elapsed >= on_duration:
                 _force_set_relay(valve_key, "OFF")
                 valve_off_done = True
+                # Allow the relay-coil ground contamination to settle before
+                # the first monitoring-phase read so the data starts clean.
+                # Uses the same 4-second constant as the main app.
+                _stress_test_stop_event.wait(timeout=4.0)
+                if _stress_test_stop_event.is_set():
+                    break
 
             with _stress_test_lock:
                 _stress_test["phase"] = "watering" if elapsed < on_duration else "monitoring"
@@ -1298,7 +1355,6 @@ def api_stream():
         if _latest_reading:
             client_q.put_nowait(json.dumps(dict(_latest_reading), default=str))
 
-    @stream_with_context
     def generate():
         try:
             while True:
@@ -1320,7 +1376,7 @@ def api_stream():
         "Cache-Control":     "no-cache",
         "X-Accel-Buffering": "no",    # Disable nginx output buffering.
     }
-    return Response(generate(), mimetype="text/event-stream", headers=headers)
+    return Response(stream_with_context(generate()), mimetype="text/event-stream", headers=headers)  # type: ignore[arg-type]
 
 
 @app.route("/api/config")
@@ -1515,7 +1571,7 @@ _bootstrap_session = {
 
 def _bootstrap_read_sensors(zone_id: int):
     """Read live BME280 + soil moisture for one zone.  Returns dict."""
-    result = {"temp": None, "humidity": None, "moisture": None, "error": None}
+    result: dict[str, float | str | None] = {"temp": None, "humidity": None, "moisture": None, "error": None}
     try:
         import board, busio
         from adafruit_bme280 import basic as adafruit_bme280
@@ -1597,6 +1653,25 @@ def _append_training_row(zone_id, target_moisture, initial_moisture,
         })
 
 
+@app.route("/api/bootstrap/zone-info/<int:zone_id>")
+def api_bootstrap_zone_info(zone_id: int):
+    """Return the target_moisture for a zone from the main DB."""
+    if zone_id not in (1, 2, 3, 4):
+        return jsonify({"error": "zone_id must be 1–4"}), 400
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT target_moisture FROM zone_profile WHERE zone_id = ?",
+            (zone_id,),
+        ).fetchone()
+        conn.close()
+        target = float(row["target_moisture"]) if row and row["target_moisture"] is not None else None
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"zone_id": zone_id, "target_moisture": target})
+
+
 @app.route("/api/bootstrap/start", methods=["POST"])
 def api_bootstrap_start():
     """
@@ -1605,12 +1680,12 @@ def api_bootstrap_start():
     Request body:
         {
           "zone_id":          1,
-          "target_moisture":  60.0,      (% — from zone profile)
           "volume_applied":   2.5,       (Litres actually applied)
           "temp":             28.5,      (optional — auto-read if omitted)
           "humidity":         70.0,      (optional — auto-read if omitted)
           "initial_moisture": 38.0       (optional — auto-read if omitted)
         }
+    Target moisture is read automatically from zone_profile in the main DB.
     """
     with _bootstrap_lock:
         if _bootstrap_session["active"]:
@@ -1622,13 +1697,26 @@ def api_bootstrap_start():
     data = request.get_json(force=True) or {}
     try:
         zone_id        = int(data["zone_id"])
-        target         = float(data["target_moisture"])
         volume_applied = float(data["volume_applied"])
     except (KeyError, ValueError, TypeError) as exc:
         return jsonify({"error": f"Missing or invalid field: {exc}"}), 400
 
+    # Read target_moisture from the main app's zone_profile (optional metadata).
+    # Bootstrap experiments do not require it — it is stored in the CSV as context only.
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT target_moisture FROM zone_profile WHERE zone_id = ?",
+            (zone_id,),
+        ).fetchone()
+        conn.close()
+        target: float | None = float(row["target_moisture"]) if row and row["target_moisture"] is not None else None
+    except Exception:
+        target = None
+
     if zone_id not in (1, 2, 3, 4):
-        return jsonify({"error": "zone_id must be 1–4"}), 400
+        return jsonify({"error": "zone_id must be 1\u20134"}), 400
     if volume_applied < 0:
         return jsonify({"error": "volume_applied must be ≥ 0"}), 400
 

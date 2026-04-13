@@ -27,6 +27,10 @@
             <h3>Irrigation Mode</h3>
             <p id="zoneIrrMode">--</p>
         </div>
+        <div class="data-box">
+            <h3>Trigger Threshold</h3>
+            <p id="zoneTriggerThreshold">-- %</p>
+        </div>
     </div>
     <div class="gauge" style="margin-top:12px;">
         <div class="gauge-fill" id="zoneGaugeFill" style="width:0%;"></div>
@@ -36,8 +40,16 @@
 <section class="card">
     <h2>Zone Settings</h2>
     <div class="zone-controls" style="max-width:320px;">
+        <label>Soil Baseline</label>
+        <select id="zoneSoilBaselineSelect"></select>
         <label>Crop Target</label>
         <select id="zoneCropTargetSelect"></select>
+        <label style="margin-top:8px;">Trigger Threshold (%)
+            <span class="small-text" style="font-weight:normal;margin-left:4px;">
+                Minimum deficit before pump fires (default 5 %)
+            </span>
+        </label>
+        <input type="number" id="zoneThresholdGap" min="0.1" max="50" step="0.1" value="5.0" style="max-width:120px;" />
         <button class="btn secondary" id="saveZoneProfileBtn" type="button">Save Zone Assignment</button>
         <p class="small-text" id="zoneSaveMsg">No changes yet.</p>
     </div>

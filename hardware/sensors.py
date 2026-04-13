@@ -165,11 +165,13 @@ def i2c_open():
 # ── ADS1115 helper ────────────────────────────────────────────────────────────
 
 def read_smoothed_channel(ads, pin) -> float:
-    """Average ADS_SAMPLES readings from a single ADS1115 channel."""
+    """Average ADS_SAMPLES readings from one ADS1115 channel, discarding the highest outlier."""
     from adafruit_ads1x15.analog_in import AnalogIn
     ch = AnalogIn(ads, pin)
     samples = [float(ch.voltage) for _ in range(ADS_SAMPLES)
                if not time.sleep(ADS_SAMPLE_DELAY)]
+    if len(samples) > 2:
+        samples.remove(max(samples))   # drop worst spike
     return sum(samples) / len(samples)
 
 

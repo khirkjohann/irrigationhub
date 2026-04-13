@@ -11,11 +11,10 @@ import threading
 
 from flask import Flask
 
-from core.config import APP_START_TIME, AUTO_CONTROL_ENABLED, LOG_VIEWER_PORT, MAIN_APP_PORT
+from core.config import APP_START_TIME, LOG_VIEWER_PORT, MAIN_APP_PORT
 from core.db import initialize_db
 from hardware.gpio_control import init_gpio
 from hardware.irrigation import (
-    auto_control_loop,
     irr_queue_worker,
     load_irrigation_log,
     sensor_poll_loop,
@@ -73,8 +72,6 @@ def start_workers() -> None:
         init_gpio()
         _irr_completed[:] = load_irrigation_log()
         threading.Thread(target=sensor_poll_loop,  daemon=True, name="sensor-loop").start()
-        if AUTO_CONTROL_ENABLED:
-            threading.Thread(target=auto_control_loop, daemon=True, name="auto-control").start()
         threading.Thread(target=_run_logs_server,  daemon=True, name="logs-server").start()
         threading.Thread(target=irr_queue_worker,  daemon=True, name="irr-queue").start()
         from hardware.gpio_control import fan_control_loop

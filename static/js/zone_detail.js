@@ -162,11 +162,23 @@ function renderEventRows(events) {
     });
 }
 
-function bindZoneSettings(zone, cropTargets) {
+function bindZoneSettings(zone, cropTargets, soilBaselines) {
+    const baselineSelect = document.getElementById('zoneSoilBaselineSelect');
+    baselineSelect.innerHTML = ['<option value="">-- Unassigned --</option>']
+        .concat((soilBaselines || []).map((item) => `<option value="${item.id}" ${zone.soil_baseline_id === item.id ? 'selected' : ''}>${item.name}</option>`))
+        .join('');
+
     const cropTargetSelect = document.getElementById('zoneCropTargetSelect');
     cropTargetSelect.innerHTML = ['<option value="">-- Unassigned --</option>']
         .concat(cropTargets.map((item) => `<option value="${item.id}" ${zone.crop_target_id === item.id ? 'selected' : ''}>${item.name}</option>`))
         .join('');
+
+    const thresholdInput = document.getElementById('zoneThresholdGap');
+    if (thresholdInput) {
+        thresholdInput.value = zone.threshold_gap !== null && zone.threshold_gap !== undefined
+            ? Number(zone.threshold_gap).toFixed(1)
+            : '5.0';
+    }
 }
 
 function renderZoneHeader(zone) {
@@ -180,6 +192,9 @@ function renderZoneHeader(zone) {
     document.getElementById('zoneValveStatus').textContent = isOn ? 'ON' : 'OFF';
     document.getElementById('zoneFlowRate').textContent =
         zone.flow_rate_lpm ? `${Number(zone.flow_rate_lpm).toFixed(1)} L/min` : '-- L/min';
+    const threshEl = document.getElementById('zoneTriggerThreshold');
+    if (threshEl) threshEl.textContent =
+        zone.threshold_gap != null ? `${Number(zone.threshold_gap).toFixed(1)} %` : '-- %';
     document.getElementById('zoneGaugeFill').style.width = `${Math.max(0, Math.min(100, moisture || 0))}%`;
     document.getElementById('zoneGaugeFill').style.background = window.AppCommon.moistureColor(moisture);
 
@@ -196,10 +211,11 @@ async function loadZoneData() {
     zoneCache = {
         zone,
         cropTargets: dashboard.crop_targets || [],
+        soilBaselines: dashboard.soil_baselines || [],
     };
 
     renderZoneHeader(zone);
-    bindZoneSettings(zone, zoneCache.cropTargets);
+    bindZoneSettings(zone, zoneCache.cropTargets, zoneCache.soilBaselines);
 
     const res = await fetch(`/api/zone/${zoneId}/history?limit=30`);
     const payload = await res.json();
@@ -211,25 +227,35 @@ async function saveZoneProfile() {
     if (!zoneCache) return;
 
     const cropTargetRaw = document.getElementById('zoneCropTargetSelect').value;
+    const baselineRaw   = document.getElementById('zoneSoilBaselineSelect').value;
+    const thresholdRaw  = document.getElementById('zoneThresholdGap')?.value;
 
     const payload = {
-        crop_target_id: cropTargetRaw === '' ? null : Number(cropTargetRaw),
+        crop_target_id:   cropTargetRaw === '' ? null : Number(cropTargetRaw),
+        soil_baseline_id: baselineRaw   === '' ? null : Number(baselineRaw),
+        threshold_gap:    thresholdRaw !== undefined && thresholdRaw !== '' ? Number(thresholdRaw) : 5.0,
     };
 
-    const res = await fetch(`/api/zone/${zoneId}/mapping`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    });
+    const msg = document.getElementById('zoneSaveMsg');
+    try {
+        const res = await fetch(`/api/zone/${zoneId}/mapping`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
 
-    if (!res.ok) {
-        const err = await res.json();
-        document.getElementById('zoneSaveMsg').textContent = err.error || 'Failed to save zone assignment.';
-        return;
+        if (!res.ok) {
+            let errText = 'Failed to save zone assignment.';
+            try { errText = (await res.json()).error || errText; } catch (_) {}
+            msg.textContent = errText;
+            return;
+        }
+
+        msg.textContent = 'Zone assignment saved.';
+        await loadZoneData();
+    } catch (e) {
+        msg.textContent = 'Save failed: ' + e.message;
     }
-
-    document.getElementById('zoneSaveMsg').textContent = 'Zone assignment saved.';
-    await loadZoneData();
 }
 
 async function deleteSelectedBaseline() {}

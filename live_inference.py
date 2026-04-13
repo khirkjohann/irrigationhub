@@ -53,9 +53,7 @@ DB_PATH        = os.getenv("IRRIGATION_DB",          "/home/pi/irrigation_data.d
 TRAINING_CSV   = os.getenv("TRAINING_CSV",            "/home/pi/training_data.csv")
 PENDING_JSON   = os.getenv("IRRIGATION_PENDING_JSON", "/home/pi/irrigation_brain_pending.json")
 
-# GPIO BCM pin for each zone valve (active-LOW relay board assumed).
-RELAY_GPIO_MAP = {1: 17, 2: 27, 3: 22, 4: 23}
-RELAY_ACTIVE_LOW = os.getenv("IRRIGATION_RELAY_ACTIVE_LOW", "1") == "1"
+APP_QUEUE_URL = os.getenv("IRRIGATION_QUEUE_URL", "http://localhost:5000/api/irrigation/queue")
 
 VALID_ZONES = {1, 2, 3, 4}
 
@@ -145,61 +143,69 @@ def _read_soil_moisture_pct(zone_id: int):
     return round(max(0.0, min(100.0, pct)), 1)
 
 
-def _actuate_valve(zone_id: int, duration_minutes: float, dry_run: bool):
+def _actuate_valve(zone_id: int, volume_liters: float, dry_run: bool):
     """
-    Open the zone valve for duration_minutes, then close it.
+    Queue an irrigation job via the main app's HTTP API.
+    The app's queue worker handles GPIO and the hardware failsafe timer.
     Skipped entirely when dry_run=True.
     """
     if dry_run:
-        print(f"[INFERENCE] DRY-RUN — would open Zone {zone_id} valve "
-              f"for {duration_minutes:.2f} min")
+        print(f"[INFERENCE] DRY-RUN — would queue Zone {zone_id}, "
+              f"{volume_liters:.3f} L")
         return
 
-    duration_seconds = duration_minutes * 60.0
-    pin = RELAY_GPIO_MAP[zone_id]
+    import json as _json
+    import urllib.request
 
+    payload = _json.dumps({
+        "zone_id":       zone_id,
+        "volume_liters": round(volume_liters, 3),
+        "source":        "ml",
+    }).encode()
+    req = urllib.request.Request(
+        APP_QUEUE_URL,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     try:
-        import RPi.GPIO as GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(pin, GPIO.OUT)
-        on_level  = GPIO.LOW  if RELAY_ACTIVE_LOW else GPIO.HIGH
-        off_level = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-
-        print(f"[INFERENCE] Zone {zone_id} valve ON (BCM {pin}) — "
-              f"{duration_seconds:.0f} s …")
-        GPIO.output(pin, on_level)
-        time.sleep(duration_seconds)
-        GPIO.output(pin, off_level)
-        print(f"[INFERENCE] Zone {zone_id} valve OFF")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            print(f"[INFERENCE] Zone {zone_id} queued — {volume_liters:.3f} L "
+                  f"(HTTP {resp.status})")
     except Exception as exc:
-        raise RuntimeError(f"GPIO actuation failed: {exc}") from exc
-    finally:
-        try:
-            GPIO.cleanup(pin)
-        except Exception:
-            pass
+        raise RuntimeError(f"Failed to queue irrigation via app: {exc}") from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Database helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_target_moisture(zone_id: int) -> float:
+def _get_zone_thresholds(zone_id: int) -> tuple[float, float]:
     """
-    Return the target_crop_moisture (%) for a zone from the main DB.
-    Raises ValueError if the zone has no target set.
+    Return (target_moisture, threshold_gap) for a zone from the main DB.
+
+    threshold_gap is the minimum deficit that must be present before the pump
+    fires.  If current_deficit < threshold_gap the zone is skipped and no
+    actuation occurs.  When the trigger IS met the FULL current_deficit is
+    passed to the model so it solves for restoring to 100 % of the target,
+    not just the 1 % that crossed the gap.
+
+    Defaults: threshold_gap = 5.0 % (matches DB column default).
+    Raises ValueError if the zone has no target_moisture set.
     """
     import sqlite3
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT target_moisture FROM zone_profile WHERE zone_id = ?", (zone_id,)
+        "SELECT target_moisture, threshold_gap FROM zone_profile WHERE zone_id = ?",
+        (zone_id,),
     ).fetchone()
     conn.close()
     if row is None or row["target_moisture"] is None:
         raise ValueError(f"Zone {zone_id} has no target_moisture set in DB")
-    return float(row["target_moisture"])
+    target    = float(row["target_moisture"])
+    threshold = float(row["threshold_gap"]) if row["threshold_gap"] is not None else 5.0
+    return target, threshold
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,7 +295,9 @@ def _write_pending(zone_id, target_moisture, initial_moisture, temp, humidity,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
-                  dummy_temp=None, dummy_humidity=None, dummy_moisture=None):
+                  dummy_temp: float | None = None,
+                  dummy_humidity: float | None = None,
+                  dummy_moisture: float | None = None):
     """
     Execute the full inference pipeline for one zone.
 
@@ -301,7 +309,7 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
 
     # ── STEP 1: Read sensors ──────────────────────────────────────────────────
     if dummy_mode:
-        if any(v is None for v in (dummy_temp, dummy_humidity, dummy_moisture)):
+        if dummy_temp is None or dummy_humidity is None or dummy_moisture is None:
             raise ValueError("dummy_mode requires dummy_temp, dummy_humidity, dummy_moisture")
         temp             = float(dummy_temp)
         humidity         = float(dummy_humidity)
@@ -317,27 +325,47 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
         initial_moisture = _read_soil_moisture_pct(zone_id)
         print(f"{initial_moisture} %")
 
-    # ── STEP 2: Look up target moisture ───────────────────────────────────────
-    target_moisture = _get_target_moisture(zone_id)
-    print(f"[INFERENCE] Target crop moisture: {target_moisture} %")
+    # ── STEP 2: Look up target moisture and trigger threshold ─────────────────
+    target_moisture, threshold_gap = _get_zone_thresholds(zone_id)
+    print(f"[INFERENCE] Target crop moisture: {target_moisture} %  "
+          f"(threshold_gap={threshold_gap} %)")
 
-    # ── STEP 3: Compute deficit; skip if already satisfied ───────────────────
-    deficit = max(0.0, target_moisture - initial_moisture)
-    print(f"[INFERENCE] Moisture deficit: {deficit:.2f} %")
+    # ── STEP 3: Compute deficit; skip if below trigger threshold ─────────────
+    #
+    # current_deficit is the FULL gap back to the target.  threshold_gap is
+    # only used as the trip-wire condition — once it fires we always ask the
+    # model to solve for the complete deficit so the pump runs long enough to
+    # restore soil moisture all the way back to the target level.
+    #
+    # Example: target=60 %, live=49 %  →  current_deficit=11 %
+    #          threshold_gap=10 %      →  11 ≥ 10  →  trigger fires
+    #          Model receives deficit=11 %, not 1 % (the overshoot).
+    current_deficit = max(0.0, target_moisture - initial_moisture)
+    print(f"[INFERENCE] Current deficit: {current_deficit:.2f} %  "
+          f"(trigger at ≥ {threshold_gap} %)")
 
-    if deficit == 0.0:
-        print("[INFERENCE] Soil at or above target — pump stays OFF.")
+    if current_deficit < threshold_gap:
+        reason = "deficit_zero" if current_deficit == 0.0 else "below_threshold"
+        if current_deficit == 0.0:
+            print("[INFERENCE] Soil at or above target — pump stays OFF.")
+        else:
+            print(f"[INFERENCE] Deficit {current_deficit:.2f} % < threshold "
+                  f"{threshold_gap:.2f} % — pump stays OFF.")
         # Log a negative-class row so the RF learns the idle state.
         _log_row(zone_id, target_moisture, initial_moisture,
                  temp, humidity, 0.0, 0.0)
         return {
             "zone_id":          zone_id,
-            "deficit":          0.0,
+            "deficit":          current_deficit,
+            "threshold_gap":    threshold_gap,
             "predicted_volume": 0.0,
             "duration_minutes": 0.0,
             "actuated":         False,
-            "reason":           "deficit_zero",
+            "reason":           reason,
         }
+
+    # Trigger met — use the full deficit for the model.
+    deficit = current_deficit
 
     # ── STEP 4: Load model and predict volume ─────────────────────────────────
     model = _load_model()
@@ -351,20 +379,21 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
         return {
             "zone_id":          zone_id,
             "deficit":          deficit,
+            "threshold_gap":    threshold_gap,
             "predicted_volume": 0.0,
             "duration_minutes": 0.0,
             "actuated":         False,
             "reason":           "model_zero_volume",
         }
 
-    # ── STEP 5: Calculate pump duration ──────────────────────────────────────
+    # ── STEP 5: Estimate duration for reporting (main app uses its own flow rate) ─
     duration_minutes = predicted_volume / FLOW_RATE_LPM
-    print(f"[INFERENCE] Duration: {duration_minutes:.2f} min  "
+    print(f"[INFERENCE] Estimated duration: {duration_minutes:.2f} min  "
           f"(flow={FLOW_RATE_LPM} L/min)")
 
-    # ── STEP 6: Actuate valve ─────────────────────────────────────────────────
+    # ── STEP 6: Queue via main app (handles GPIO + failsafe timer) ────────────
     actuation_ts = datetime.now().isoformat()
-    _actuate_valve(zone_id, duration_minutes, dry_run)
+    _actuate_valve(zone_id, predicted_volume, dry_run)
 
     # ── STEP 7: Write pending-feedback sidecar ────────────────────────────────
     _write_pending(zone_id, target_moisture, initial_moisture, temp, humidity,
@@ -378,6 +407,7 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
         "zone_id":          zone_id,
         "target_moisture":  target_moisture,
         "initial_moisture": initial_moisture,
+        "threshold_gap":    threshold_gap,
         "temp":             temp,
         "humidity":         humidity,
         "deficit":          deficit,

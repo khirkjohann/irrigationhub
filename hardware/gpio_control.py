@@ -58,7 +58,7 @@ def init_gpio() -> None:
         conn.commit()
         conn.close()
 
-        # Fan PWM on GPIO14 (TXD pin), starts at 0 % duty.
+        # Fan PWM on GPIO12 (hardware PWM0 pin). Starts at 0 % duty.
         try:
             GPIO.setup(FAN_GPIO, GPIO.OUT, initial=GPIO.LOW)
             pwm = GPIO.PWM(FAN_GPIO, FAN_PWM_HZ)

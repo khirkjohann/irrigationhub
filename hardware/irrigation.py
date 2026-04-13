@@ -1,34 +1,33 @@
 """
-irrigation.py — Valve control, queue worker, scheduling, auto-control loop,
-                and sensor poll loop.
+irrigation.py — Valve control, irrigation queue worker, and sensor poll loop.
 """
 import threading
 import time
 from datetime import datetime, timedelta
 
 from core.config import (
-    AUTO_CONTROL_ENABLED,
-    AUTO_FAILSAFE_MINUTES,
-    AUTO_HYSTERESIS,
-    AUTO_PREDICT_MINUTES,
-    CONTROL_LOOP_SECONDS,
     SENSOR_POLL_SECONDS,
+    RELAY_BLACKOUT_SECONDS,
     VALID_ZONES,
 )
 from core.db import get_db
 from hardware.gpio_control import write_relay
-from core.utils import clamp, parse_ts, voltage_to_pct
+from core.utils import voltage_to_pct
 
 # ── Shared irrigation state ───────────────────────────────────────────────────
 _valve_lock         = threading.Lock()
 _valve_timers:       dict = {}   # zone_id → threading.Timer
-_valve_manual_until: dict = {}   # zone_id → datetime (blocks auto_control)
+_open_valves:        set  = set()  # zone_ids currently ON
+_last_valve_change: float = 0.0  # time.monotonic() of last set_valve() call
 
 _irr_queue_lock = threading.Lock()
 _irr_queue:     list = []
 _irr_active          = None   # currently running item
 _irr_completed: list = []     # last 50 completed items
 _irr_next_id         = 1
+
+# Event that wakes the sensor poll loop early when a valve closes mid-sleep.
+_poll_wake_event = threading.Event()
 
 
 def get_irr_snapshot() -> dict:
@@ -174,8 +173,7 @@ def load_irrigation_log() -> list:
 # ── Valve control ─────────────────────────────────────────────────────────────
 
 def _failsafe_close(zone_id: int) -> None:
-    log_event(zone_id, "valve_off", "failsafe",
-              f"Auto-close after {AUTO_FAILSAFE_MINUTES} min")
+    log_event(zone_id, "valve_off", "failsafe", f"Valve {zone_id} auto-closed by failsafe timer")
     try:
         write_relay(zone_id, "OFF")
     except Exception as exc:
@@ -187,9 +185,23 @@ def _failsafe_close(zone_id: int) -> None:
     )
     conn.commit()
     conn.close()
+    global _last_valve_change
+    _last_valve_change = time.monotonic()
     with _valve_lock:
+        _open_valves.discard(zone_id)
         _valve_timers.pop(zone_id, None)
-        _valve_manual_until.pop(zone_id, None)
+    _poll_wake_event.set()   # wake sensor loop so it reads promptly after blackout
+
+
+def any_valve_open() -> bool:
+    """Return True if any zone valve is currently ON."""
+    with _valve_lock:
+        return bool(_open_valves)
+
+
+def get_last_valve_change() -> float:
+    """Return time.monotonic() timestamp of the most recent valve state change."""
+    return _last_valve_change
 
 
 def set_valve(zone_id: int, state: str,
@@ -199,6 +211,16 @@ def set_valve(zone_id: int, state: str,
         write_relay(zone_id, state)
     except Exception as exc:
         print(f"[RELAY] Write failed zone {zone_id}: {exc}")
+
+    global _last_valve_change
+    _last_valve_change = time.monotonic()
+
+    with _valve_lock:
+        if state == "ON":
+            _open_valves.add(zone_id)
+        else:
+            _open_valves.discard(zone_id)
+            _poll_wake_event.set()   # wake sensor loop so it reads promptly after blackout
 
     conn = get_db()
     conn.execute(
@@ -217,12 +239,9 @@ def set_valve(zone_id: int, state: str,
                 t = threading.Timer(auto_close_minutes * 60, _failsafe_close, args=(zone_id,))
                 t.daemon = True
                 t.start()
-                _valve_timers[zone_id]       = t
-                _valve_manual_until[zone_id] = datetime.now() + timedelta(minutes=auto_close_minutes)
-            else:
-                _valve_manual_until[zone_id] = datetime.now() + timedelta(hours=24)
+                _valve_timers[zone_id] = t
         else:
-            _valve_manual_until.pop(zone_id, None)
+            pass  # timer already cancelled above
 
     detail = f"Valve {zone_id} → {state}"
     if state == "ON" and auto_close_minutes and auto_close_minutes > 0:
@@ -238,26 +257,6 @@ _sched_last_fired: dict = {}
 def _dow_js_to_py(js_dow: int) -> int:
     """Convert JS day-of-week (0=Sun) to Python weekday (0=Mon)."""
     return (int(js_dow) - 1) % 7
-
-
-# ── Prediction helper ─────────────────────────────────────────────────────────
-
-def predict_moisture(rows, zone_id: int, minutes_ahead: float) -> float | None:
-    """Linear extrapolation over recent readings. Returns None if not enough data."""
-    key   = f"soil_moisture_{zone_id}"
-    _raw  = [(parse_ts(r["timestamp"]), float(r[key])) for r in rows if r[key] is not None]
-    points = [(ts, m) for ts, m in _raw if ts is not None]
-    if len(points) < 4:
-        return None
-    t0  = points[0][0]
-    xs  = [(ts - t0).total_seconds() / 60 for ts, _ in points]
-    ys  = [m for _, m in points]
-    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-    vx  = sum((x - mx) ** 2 for x in xs)
-    if vx == 0:
-        return ys[-1]
-    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / vx
-    return clamp(slope * (xs[-1] + minutes_ahead) + (my - slope * mx), 0.0, 100.0)
 
 
 # ── Queue worker ──────────────────────────────────────────────────────────────
@@ -419,55 +418,6 @@ def irr_queue_worker() -> None:
             print(f"[IRR-QUEUE] Worker error: {exc}")
 
 
-# ── Auto-control loop ─────────────────────────────────────────────────────────
-
-def auto_control_loop() -> None:
-    while True:
-        time.sleep(CONTROL_LOOP_SECONDS)
-        if not AUTO_CONTROL_ENABLED:
-            continue
-        try:
-            conn  = get_db()
-            rows  = conn.execute(
-                """SELECT timestamp, soil_moisture_1, soil_moisture_2,
-                          soil_moisture_3, soil_moisture_4
-                   FROM sensor_data ORDER BY timestamp DESC LIMIT 48"""
-            ).fetchall()
-            zones = conn.execute(
-                "SELECT zone_id, target_moisture, disabled FROM zone_profile ORDER BY zone_id"
-            ).fetchall()
-            valves = {r["valve_id"]: r["status"]
-                      for r in conn.execute("SELECT valve_id, status FROM valve_status").fetchall()}
-            locks  = {r["zone_id"] for r in conn.execute(
-                "SELECT zone_id FROM testing_lock WHERE locked_until > datetime('now')"
-            ).fetchall()}
-            conn.close()
-
-            if not rows:
-                continue
-            latest  = rows[0]
-            history = list(reversed(rows))
-
-            for z in zones:
-                zid     = z["zone_id"]
-                target  = z["target_moisture"]
-                current = latest[f"soil_moisture_{zid}"]
-                if z["disabled"] or target is None or current is None or zid in locks:
-                    continue
-                with _valve_lock:
-                    guard = _valve_manual_until.get(zid)
-                if guard and guard > datetime.now():
-                    continue
-                predicted = predict_moisture(history, zid, AUTO_PREDICT_MINUTES) or float(current)
-                status    = valves.get(zid, "OFF")
-                if predicted < target - AUTO_HYSTERESIS and status == "OFF":
-                    set_valve(zid, "ON", auto_close_minutes=AUTO_FAILSAFE_MINUTES, source="auto")
-                elif float(current) >= target + AUTO_HYSTERESIS and status == "ON":
-                    set_valve(zid, "OFF", source="auto")
-        except Exception as exc:
-            print(f"[AUTO] {exc}")
-
-
 # ── Sensor poll loop ──────────────────────────────────────────────────────────
 
 def sensor_poll_loop() -> None:
@@ -475,10 +425,29 @@ def sensor_poll_loop() -> None:
     # Deferred import avoids circular import: sensors.py ← irrigation.py ← sensors.py
     from hardware.sensors import get_sensor_snapshot, update_sensor, read_hardware
 
+    _last_good_snapshot: dict | None = None
+
     while True:
         now = datetime.now().isoformat()
         try:
+            # While any valve is open the 12V relay coil shares ground with the Pi,
+            # causing a constant DC offset on the ADS1115 reference — readings are
+            # meaningless (~3 V / 0% moisture) for the entire valve-open period.
+            # Hold the last good reading and skip the DB write entirely.
+            if any_valve_open():
+                print("[SENSOR] Valve open — skipping read (holding last good values)")
+                time.sleep(min(10.0, SENSOR_POLL_SECONDS))
+                continue
+
+            # Post-close blackout: wait for inrush settling after the relay releases.
+            since_valve = time.monotonic() - _last_valve_change
+            if since_valve < RELAY_BLACKOUT_SECONDS:
+                wait = RELAY_BLACKOUT_SECONDS - since_valve
+                print(f"[SENSOR] Post-relay blackout — waiting {wait:.1f}s for rail to settle")
+                time.sleep(wait)
+
             snapshot  = read_hardware()
+            _last_good_snapshot = snapshot
             conn      = get_db()
             zones     = conn.execute(
                 "SELECT zone_id, disabled, soil_baseline_id FROM zone_profile ORDER BY zone_id"
@@ -523,4 +492,5 @@ def sensor_poll_loop() -> None:
             print(f"[SENSOR] {exc}")
 
         retry_fast = bool(get_sensor_snapshot().get("missing_inputs"))
-        time.sleep(30.0 if retry_fast else SENSOR_POLL_SECONDS)
+        _poll_wake_event.clear()
+        _poll_wake_event.wait(timeout=30.0 if retry_fast else SENSOR_POLL_SECONDS)

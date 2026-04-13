@@ -5,7 +5,7 @@ import os
 
 from flask import Blueprint, jsonify, request
 
-from core.config import CROP_TARGETS, ML_MODEL_PATH, VALID_ZONES
+from core.config import ML_MODEL_PATH, VALID_ZONES
 from core.db import get_db
 from hardware.irrigation import log_event
 from core.utils import to_bool, voltage_to_pct
@@ -21,11 +21,25 @@ def _zone_dict(row) -> dict:
 def api_zone_mapping(zone_id):
     if zone_id not in VALID_ZONES:
         return jsonify({"error": "Invalid zone_id"}), 400
-    p  = request.get_json(silent=True) or {}
-    bl = int(p["soil_baseline_id"]) if p.get("soil_baseline_id") not in (None, "") else None
-    ct = int(p["crop_target_id"])   if p.get("crop_target_id")   not in (None, "") else None
+    p = request.get_json(silent=True) or {}
 
     conn = get_db()
+    existing = conn.execute(
+        "SELECT soil_baseline_id, crop_target_id FROM zone_profile WHERE zone_id=?", (zone_id,)
+    ).fetchone()
+
+    # Only overwrite a field if it was explicitly present in the payload.
+    # Sending null/empty clears it; omitting the key keeps the existing value.
+    if "soil_baseline_id" in p:
+        bl = int(p["soil_baseline_id"]) if p["soil_baseline_id"] not in (None, "") else None
+    else:
+        bl = existing["soil_baseline_id"] if existing else None
+
+    if "crop_target_id" in p:
+        ct = int(p["crop_target_id"]) if p["crop_target_id"] not in (None, "") else None
+    else:
+        ct = existing["crop_target_id"] if existing else None
+
     bls  = {r["id"]: r for r in conn.execute(
         "SELECT id, dry_voltage, wet_voltage FROM soil_baseline"
     ).fetchall()}
@@ -44,9 +58,14 @@ def api_zone_mapping(zone_id):
         cts[ct]["target_voltage"], bls[bl]["dry_voltage"], bls[bl]["wet_voltage"]
     ) if bl and ct else None
 
+    threshold_gap = float(p.get("threshold_gap", 5.0))
+    if not (0.0 < threshold_gap <= 50.0):
+        conn.close()
+        return jsonify({"error": "threshold_gap must be between 0.1 and 50 %"}), 400
+
     conn.execute(
-        "UPDATE zone_profile SET soil_baseline_id=?,crop_target_id=?,target_moisture=? WHERE zone_id=?",
-        (bl, ct, target_moisture, zone_id),
+        "UPDATE zone_profile SET soil_baseline_id=?,crop_target_id=?,target_moisture=?,threshold_gap=? WHERE zone_id=?",
+        (bl, ct, target_moisture, threshold_gap, zone_id),
     )
     conn.commit()
     z = conn.execute("""
@@ -55,29 +74,6 @@ def api_zone_mapping(zone_id):
         LEFT JOIN soil_baseline sb ON sb.id=zp.soil_baseline_id
         LEFT JOIN crop_target   ct ON ct.id=zp.crop_target_id
         WHERE zp.zone_id=?""", (zone_id,)).fetchone()
-    conn.close()
-    return jsonify({"zone": _zone_dict(z)})
-
-
-@bp.route("/api/zone/<int:zone_id>/profile", methods=["POST"])
-def api_zone_profile(zone_id):
-    if zone_id not in VALID_ZONES:
-        return jsonify({"error": "Invalid zone_id"}), 400
-    p    = request.get_json(silent=True) or {}
-    crop = p.get("crop", "Corn")
-    if crop not in CROP_TARGETS:
-        return jsonify({"error": "Invalid crop"}), 400
-    if crop == "Custom":
-        tm = p.get("target_moisture")
-        if tm is None:
-            return jsonify({"error": "Custom crop requires target_moisture"}), 400
-    else:
-        tm = CROP_TARGETS[crop]
-    conn = get_db()
-    conn.execute("UPDATE zone_profile SET crop=?,target_moisture=? WHERE zone_id=?",
-                 (crop, tm, zone_id))
-    conn.commit()
-    z = conn.execute("SELECT * FROM zone_profile WHERE zone_id=?", (zone_id,)).fetchone()
     conn.close()
     return jsonify({"zone": _zone_dict(z)})
 

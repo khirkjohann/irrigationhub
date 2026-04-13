@@ -3,7 +3,7 @@ db.py — SQLite database connection and schema initialisation.
 """
 import sqlite3
 
-from core.config import DB_PATH, VALID_ZONES, CROP_TARGETS
+from core.config import DB_PATH, VALID_ZONES
 
 
 def get_db() -> sqlite3.Connection:
@@ -32,7 +32,7 @@ def initialize_db() -> None:
         );
         CREATE TABLE IF NOT EXISTS zone_profile (
             zone_id          INTEGER PRIMARY KEY,
-            crop             TEXT    NOT NULL DEFAULT 'Corn',
+            crop             TEXT,
             target_moisture  REAL,
             disabled         INTEGER NOT NULL DEFAULT 0,
             soil_baseline_id INTEGER,
@@ -92,8 +92,8 @@ def initialize_db() -> None:
     )
     for zone_id in VALID_ZONES:
         conn.execute(
-            "INSERT OR IGNORE INTO zone_profile (zone_id, crop, target_moisture) VALUES (?,?,?)",
-            (zone_id, "Corn", CROP_TARGETS["Corn"]),
+            "INSERT OR IGNORE INTO zone_profile (zone_id) VALUES (?)",
+            (zone_id,),
         )
 
     # Idempotent column additions for older DBs.
@@ -104,6 +104,7 @@ def initialize_db() -> None:
         ("crop_target_id",   "INTEGER"),
         ("flow_rate_lpm",    "REAL NOT NULL DEFAULT 3.0"),
         ("irr_mode",         "TEXT NOT NULL DEFAULT 'ml'"),
+        ("threshold_gap",    "REAL NOT NULL DEFAULT 5.0"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE zone_profile ADD COLUMN {col} {defn}")

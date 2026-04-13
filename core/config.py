@@ -25,8 +25,11 @@ ADS_SAMPLE_DELAY       = 0.05    # seconds between samples
 # Zone → ADS1115 channel (0=A0 … 3=A3)
 ZONE_ADS_CHANNEL = {1: 0, 2: 1, 3: 2, 4: 3}
 
-# ── Fan (GPIO14 / TXD pin — 3-wire PWM fan) ───────────────────────────────────
-FAN_GPIO      = int(os.getenv("IRRIGATION_FAN_GPIO", "14"))
+# ── Fan (GPIO12 — hardware PWM0 pin, no UART conflict) ────────────────────────
+# GPIO14 (TXD) MUST NOT be used: enable_uart=1 keeps the UART hardware active
+# on that pin, causing UART↔GPIO contention and SCHED_RR PWM-thread starvation
+# of the I2C kernel driver (~1 s timeout per address in i2cdetect).
+FAN_GPIO      = int(os.getenv("IRRIGATION_FAN_GPIO", "12"))
 FAN_PWM_HZ    = 100
 FAN_POLL_SECS = 5.0
 # (temp_celsius_threshold, duty_percent)  — evaluated low→high
@@ -39,19 +42,10 @@ FAN_CURVE = [
 ]
 
 # ── Auto-control ──────────────────────────────────────────────────────────────
-AUTO_CONTROL_ENABLED  = os.getenv("IRRIGATION_ENABLE_AUTO_CONTROL", "1") == "1"
 SENSOR_POLL_SECONDS   = 300.0
-CONTROL_LOOP_SECONDS  = float(os.getenv("IRRIGATION_CONTROL_LOOP_SECONDS", "10"))
-AUTO_HYSTERESIS       = float(os.getenv("IRRIGATION_AUTO_HYSTERESIS", "3"))
-AUTO_PREDICT_MINUTES  = float(os.getenv("IRRIGATION_AUTO_PREDICT_MINUTES", "20"))
-AUTO_FAILSAFE_MINUTES = int(os.getenv("IRRIGATION_AUTO_FAILSAFE_MINUTES", "10"))
-
-CROP_TARGETS = {
-    "Corn":    30,
-    "Cassava": 35,
-    "Peanuts": 25,
-    "Custom":  None,
-}
+# Seconds to suppress sensor DB writes after any valve switches state.
+# Prevents pump inrush / relay switching noise from corrupting training data.
+RELAY_BLACKOUT_SECONDS = 15.0
 
 ML_MODEL_PATH = os.getenv("IRRIGATION_BRAIN_PKL", "/home/pi/irrigation_brain.pkl")
 
