@@ -326,7 +326,7 @@ async function executeMLIrrigation() {
         const res = await fetch('/api/irrigation/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ zone_id: zoneId, volume_liters: mlRecommendedLiters }),
+            body: JSON.stringify({ zone_id: zoneId, volume_liters: mlRecommendedLiters, source: 'ml' }),
         });
         if (!res.ok) {
             const err = await res.json();

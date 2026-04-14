@@ -95,10 +95,11 @@ def _log_row(zone_id, target_crop_moisture, initial_moisture, temp, humidity,
 #  Pending sidecar helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_pending() -> dict:
+def _load_pending() -> list:
     """
     Load the sidecar JSON written by live_inference.py.
-    Raises FileNotFoundError if no pending session exists.
+    Returns a list of pending records (supports both old single-dict and new
+    list format).  Raises FileNotFoundError if no pending session exists.
     """
     if not os.path.exists(PENDING_JSON):
         raise FileNotFoundError(
@@ -106,7 +107,10 @@ def _load_pending() -> dict:
             "Run live_inference.py first."
         )
     with open(PENDING_JSON) as fh:
-        return json.load(fh)
+        data = json.load(fh)
+    if isinstance(data, dict):
+        return [data]   # migrate old single-dict format
+    return data
 
 
 def _clear_pending():
@@ -253,51 +257,94 @@ def grade(final_moisture: float, pending: dict, dummy_mode: bool, dry_run: bool)
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Grade the last irrigation event and log a corrected training row."
+        description="Grade the last irrigation event(s) and log corrected training rows."
     )
     parser.add_argument("--dummy",    action="store_true",
                         help="Skip real sensor reads (for testing)")
     parser.add_argument("--dry-run",  action="store_true",
                         help="Do not actuate valve in any second-pass")
     parser.add_argument("--moisture", type=float, default=None,
-                        help="Override final moisture % (required with --dummy)")
+                        help="Override final moisture %% when in dummy mode (single-zone)")
+
+    # ── Manual mode: supply all fields directly, no pending file needed ───────
+    parser.add_argument("--manual",      action="store_true",
+                        help="Grade a single event manually without a pending file")
+    parser.add_argument("--zone",        type=int,   default=None)
+    parser.add_argument("--target",      type=float, default=None,
+                        help="Target crop moisture %%")
+    parser.add_argument("--initial",     type=float, default=None,
+                        help="Initial moisture %% before irrigation")
+    parser.add_argument("--temp",        type=float, default=None)
+    parser.add_argument("--humidity",    type=float, default=None)
+    parser.add_argument("--deficit",     type=float, default=None,
+                        help="Moisture_Deficit used for prediction")
+    parser.add_argument("--predicted-volume", type=float, default=None,
+                        dest="predicted_volume")
+    parser.add_argument("--post-moisture",    type=float, default=None,
+                        dest="post_moisture",
+                        help="Actual post-irrigation moisture %%")
     args = parser.parse_args()
 
-    # Load the pending record created by live_inference.py
+    # ── Manual single-event grade ─────────────────────────────────────────────
+    if args.manual:
+        required = ["zone", "target", "initial", "temp", "humidity",
+                    "deficit", "predicted_volume", "post_moisture"]
+        missing = [f"--{r.replace('_','-')}" for r in required
+                   if getattr(args, r) is None]
+        if missing:
+            print(f"[GRADER] ERROR: --manual requires: {', '.join(missing)}",
+                  file=sys.stderr)
+            sys.exit(1)
+        pending = {
+            "zone_id":          args.zone,
+            "target_moisture":  args.target,
+            "initial_moisture": args.initial,
+            "temp":             args.temp,
+            "humidity":         args.humidity,
+            "deficit":          args.deficit,
+            "predicted_volume": args.predicted_volume,
+            "flow_rate_lpm":    FLOW_RATE,
+        }
+        print(f"[GRADER] MANUAL grade for Zone {args.zone}")
+        outcome = grade(args.post_moisture, pending,
+                        dummy_mode=True, dry_run=args.dry_run)
+        print(f"\n[GRADER] Grade: {outcome['grade']}  —  {outcome['description']}")
+        sys.exit(0)
+
+    # ── Normal mode: read pending sidecar ─────────────────────────────────────
     try:
-        pending = _load_pending()
+        pending_list = _load_pending()
     except FileNotFoundError as exc:
         print(f"[GRADER] ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    zone_id = pending["zone_id"]
+    for pending in pending_list:
+        zone_id = pending["zone_id"]
 
-    # Read final (post-watering) moisture
-    if args.dummy:
-        if args.moisture is None:
-            print("[GRADER] ERROR: --moisture required with --dummy", file=sys.stderr)
-            sys.exit(1)
-        final_moisture = float(args.moisture)
-        print(f"[GRADER] DUMMY  final moisture={final_moisture} %")
-    else:
-        print(f"[GRADER] Reading post-watering moisture Zone {zone_id} …",
-              end=" ", flush=True)
-        try:
-            final_moisture = _read_soil_moisture_pct(zone_id)
-            print(f"{final_moisture} %")
-        except Exception as exc:
-            print(f"FAILED: {exc}", file=sys.stderr)
-            sys.exit(1)
+        if args.dummy:
+            if args.moisture is None:
+                print("[GRADER] ERROR: --moisture required with --dummy",
+                      file=sys.stderr)
+                sys.exit(1)
+            final_moisture = float(args.moisture)
+            print(f"[GRADER] DUMMY  Zone {zone_id} final moisture={final_moisture} %")
+        else:
+            print(f"[GRADER] Reading post-watering moisture Zone {zone_id} …",
+                  end=" ", flush=True)
+            try:
+                final_moisture = _read_soil_moisture_pct(zone_id)
+                print(f"{final_moisture} %")
+            except Exception as exc:
+                print(f"FAILED: {exc}", file=sys.stderr)
+                print(f"[GRADER] Skipping Zone {zone_id} — sensor error.")
+                continue
 
-    outcome = grade(final_moisture, pending, dummy_mode=args.dummy,
-                    dry_run=args.dry_run)
+        outcome = grade(final_moisture, pending,
+                        dummy_mode=args.dummy, dry_run=args.dry_run)
+        print(f"\n[GRADER] Grade: {outcome['grade']}  —  {outcome['description']}")
 
-    print(f"\n[GRADER] Grade: {outcome['grade']}  —  {outcome['description']}")
-
-    # Clean up sidecar so it is not re-graded accidentally
     _clear_pending()
     print(f"[GRADER] Pending sidecar cleared.")
-
     sys.exit(0)
 
 

@@ -69,6 +69,13 @@
             thesis dashboard, then run <code>cron_retrain.py</code> to train the model.
         </p>
         <p class="small-text">Predict optimal irrigation volume based on current soil moisture and crop target.</p>
+        <div class="small-text" style="background:#f0f4ff;border-left:3px solid #3a6fc4;padding:7px 10px;border-radius:4px;margin-bottom:10px;">
+            <strong>Auto-prediction schedule (Zones 2 &amp; 3):</strong>&nbsp;
+            <span style="margin-right:8px;">&#9679; 7:00 AM</span>
+            <span style="margin-right:8px;">&#9679; 12:00 PM</span>
+            <span>&#9679; 5:00 PM</span>
+            <br><span style="color:#666;">The system automatically runs a prediction and queues irrigation at these times if the moisture deficit exceeds the trigger threshold. Graded at :55 after 30 min absorption.</span>
+        </div>
         <button class="btn" id="mlPredictBtn" type="button">Calculate Recommendation</button>
         <div id="mlPredictResult" style="display:none;">
             <div class="env-grid" style="margin-top:12px;">

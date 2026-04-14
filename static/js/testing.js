@@ -177,15 +177,16 @@ function renderQueueTable(queue, active) {
 function renderCompletedTable(completed) {
     const tbody = document.querySelector('#irrCompletedTable tbody');
     if (!completed.length) {
-        tbody.innerHTML = '<tr><td colspan="14" class="muted-cell">No completed irrigations yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="muted-cell">No completed irrigations yet.</td></tr>';
         return;
     }
     tbody.innerHTML = completed.map((item) => {
         const actualDur = item.actual_duration_minutes != null ? item.actual_duration_minutes : '--';
         const estDur    = item.duration_minutes ?? item.est_duration_minutes ?? '--';
+        const sourceLabel = item.source === 'ml' ? 'ML' : (item.source || 'manual');
         return `<tr>
             <td>Zone ${item.zone_id}</td>
-            <td>${item.source || 'manual'}</td>
+            <td>${sourceLabel}</td>
             <td>${fmtTime(item.added_at)}</td>
             <td>${fmtTime(item.started_at)}</td>
             <td>${fmtTime(item.completed_at)}</td>
@@ -193,11 +194,8 @@ function renderCompletedTable(completed) {
             <td>${estDur}</td>
             <td><strong>${actualDur}</strong></td>
             <td>${fmtMoisture(item.initial_moisture)}</td>
-            <td><strong>${fmtMoisture(item.post_moisture)}</strong></td>
             <td>${item.temperature != null ? item.temperature : '--'}</td>
             <td>${item.humidity != null ? item.humidity : '--'}</td>
-            <td>${item.crop_target_name || '--'}</td>
-            <td>${item.target_moisture != null ? item.target_moisture + ' %' : '--'}</td>
         </tr>`;
     }).join('');
 }

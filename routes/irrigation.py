@@ -36,7 +36,9 @@ def api_irr_queue_add():
         return jsonify({"error": "Invalid zone_id"}), 400
     if volume_liters <= 0:
         return jsonify({"error": "volume_liters must be positive"}), 400
-    item = queue_add(zone_id, volume_liters)
+    raw_source = payload.get("source", "manual")
+    source = raw_source if raw_source in ("ml", "manual", "schedule") else "manual"
+    item = queue_add(zone_id, volume_liters, source=source)
     return jsonify({"success": True, "item": item}), 201
 
 

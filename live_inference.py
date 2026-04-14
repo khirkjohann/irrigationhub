@@ -271,10 +271,10 @@ def _predict_volume(model, temp: float, humidity: float, deficit: float) -> floa
 def _write_pending(zone_id, target_moisture, initial_moisture, temp, humidity,
                    deficit, predicted_volume, actuation_ts):
     """
-    Write a sidecar JSON so feedback_grader.py knows what happened.
-    Overwrites any previous pending record for this zone.
+    Append a sidecar record so feedback_grader.py knows what happened.
+    Multiple zones per batch are stored as a list — no zone overwrites another.
     """
-    pending = {
+    new_entry = {
         "zone_id":           zone_id,
         "target_moisture":   target_moisture,
         "initial_moisture":  initial_moisture,
@@ -285,8 +285,17 @@ def _write_pending(zone_id, target_moisture, initial_moisture, temp, humidity,
         "flow_rate_lpm":     FLOW_RATE_LPM,
         "actuation_ts":      actuation_ts,
     }
+    # Load existing list (if any), append, then write back.
+    if os.path.exists(PENDING_JSON):
+        with open(PENDING_JSON) as fh:
+            existing = json.load(fh)
+        if isinstance(existing, dict):
+            existing = [existing]   # migrate old single-dict format
+    else:
+        existing = []
+    existing.append(new_entry)
     with open(PENDING_JSON, "w") as fh:
-        json.dump(pending, fh, indent=2)
+        json.dump(existing, fh, indent=2)
     print(f"[INFERENCE] Pending feedback written → {PENDING_JSON}")
 
 
@@ -297,7 +306,8 @@ def _write_pending(zone_id, target_moisture, initial_moisture, temp, humidity,
 def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
                   dummy_temp: float | None = None,
                   dummy_humidity: float | None = None,
-                  dummy_moisture: float | None = None):
+                  dummy_moisture: float | None = None,
+                  _skip_queue: bool = False):
     """
     Execute the full inference pipeline for one zone.
 
@@ -392,6 +402,25 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
           f"(flow={FLOW_RATE_LPM} L/min)")
 
     # ── STEP 6: Queue via main app (handles GPIO + failsafe timer) ────────────
+    if _skip_queue:
+        # Batch mode: caller will queue all zones after all predictions are done.
+        result = {
+            "zone_id":          zone_id,
+            "target_moisture":  target_moisture,
+            "initial_moisture": initial_moisture,
+            "threshold_gap":    threshold_gap,
+            "temp":             temp,
+            "humidity":         humidity,
+            "deficit":          deficit,
+            "predicted_volume": predicted_volume,
+            "duration_minutes": duration_minutes,
+            "flow_rate_lpm":    FLOW_RATE_LPM,
+            "actuated":         False,
+            "_needs_queue":     True,
+        }
+        print(f"[INFERENCE] Prediction ready — Zone {zone_id}, {predicted_volume:.3f} L (queuing deferred)")
+        return result
+
     actuation_ts = datetime.now().isoformat()
     _actuate_valve(zone_id, predicted_volume, dry_run)
 
@@ -422,6 +451,60 @@ def run_inference(zone_id: int, dummy_mode: bool, dry_run: bool,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Batch runner — sense all zones first, then queue all
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_BATCH_ZONES = [2, 3]
+
+def run_batch(zone_ids=None, dummy_mode=False, dry_run=False):
+    """
+    Two-phase batch inference.
+    Phase 1: read sensors + predict for every zone (no pump running).
+    Phase 2: queue all zones that need irrigation.
+
+    This prevents the pump from zone N being on while zone N+1's sensor
+    is being read, which caused false 0 % readings.
+    """
+    if zone_ids is None:
+        zone_ids = DEFAULT_BATCH_ZONES
+
+    predictions = []
+
+    # ── Phase 1: sense + predict (skip_queue=True) ───────────────────────────
+    print(f"\n[BATCH] ── Phase 1: sensing + predicting zones {zone_ids} ──")
+    for zid in zone_ids:
+        try:
+            result = run_inference(zid, dummy_mode=dummy_mode, dry_run=dry_run,
+                                   _skip_queue=True)
+            predictions.append(result)
+        except Exception as exc:
+            print(f"[BATCH] FATAL Zone {zid}: {exc}", file=sys.stderr)
+
+    # ── Phase 2: queue all predictions that need irrigation ──────────────────
+    needs_queue = [p for p in predictions if p.get("_needs_queue")]
+    if not needs_queue:
+        print("[BATCH] Phase 2 — no zones need queuing.")
+        return predictions
+
+    print(f"\n[BATCH] ── Phase 2: queuing {len(needs_queue)} zone(s) ──")
+    for pred in needs_queue:
+        zid = pred["zone_id"]
+        vol = pred["predicted_volume"]
+        try:
+            actuation_ts = datetime.now().isoformat()
+            _actuate_valve(zid, vol, dry_run)
+            _write_pending(zid, pred["target_moisture"], pred["initial_moisture"],
+                           pred["temp"], pred["humidity"], pred["deficit"],
+                           vol, actuation_ts)
+            pred["actuated"]     = not dry_run
+            pred["actuation_ts"] = actuation_ts
+        except Exception as exc:
+            print(f"[BATCH] Queue failed Zone {zid}: {exc}", file=sys.stderr)
+
+    return predictions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -429,8 +512,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Edge inference: read sensors → predict irrigation volume → actuate."
     )
-    parser.add_argument("--zone", type=int, required=True, choices=[1, 2, 3, 4],
-                        help="Zone ID to irrigate (1-4)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--zone",  type=int, choices=[1, 2, 3, 4],
+                       help="Single zone ID (legacy; prefer --zones for batch)")
+    group.add_argument("--zones", type=int, nargs="+", metavar="N",
+                       help="One or more zone IDs — senses all first, then queues all")
     parser.add_argument("--dummy", action="store_true",
                         help="Use manual/dummy sensor values (no hardware)")
     parser.add_argument("--dry-run", action="store_true",
@@ -440,22 +526,32 @@ def main():
     parser.add_argument("--moisture", type=float, help="Dummy soil moisture (%)")
     args = parser.parse_args()
 
-    try:
-        result = run_inference(
-            zone_id      = args.zone,
-            dummy_mode   = args.dummy,
-            dry_run      = args.dry_run,
-            dummy_temp   = args.temp,
-            dummy_humidity = args.humidity,
-            dummy_moisture = args.moisture,
-        )
-        sys.exit(0 if result.get("actuated") or result.get("reason") else 1)
-    except FileNotFoundError as exc:
-        print(f"[INFERENCE] ERROR: {exc}", file=sys.stderr)
-        sys.exit(2)
-    except Exception as exc:
-        print(f"[INFERENCE] FATAL: {exc}", file=sys.stderr)
-        sys.exit(1)
+    if args.zones:
+        # Batch mode: validate zone IDs then run two-phase batch
+        for zid in args.zones:
+            if zid not in VALID_ZONES:
+                print(f"[INFERENCE] ERROR: Invalid zone_id {zid}", file=sys.stderr)
+                sys.exit(1)
+        run_batch(zone_ids=args.zones, dummy_mode=args.dummy, dry_run=args.dry_run)
+        sys.exit(0)
+    else:
+        # Legacy single-zone mode
+        try:
+            result = run_inference(
+                zone_id        = args.zone,
+                dummy_mode     = args.dummy,
+                dry_run        = args.dry_run,
+                dummy_temp     = args.temp,
+                dummy_humidity = args.humidity,
+                dummy_moisture = args.moisture,
+            )
+            sys.exit(0 if result.get("actuated") or result.get("reason") else 1)
+        except FileNotFoundError as exc:
+            print(f"[INFERENCE] ERROR: {exc}", file=sys.stderr)
+            sys.exit(2)
+        except Exception as exc:
+            print(f"[INFERENCE] FATAL: {exc}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

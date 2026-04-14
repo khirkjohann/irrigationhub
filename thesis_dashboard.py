@@ -1967,6 +1967,32 @@ def api_bootstrap_manual_add():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  ML Pipeline Log  (Panel 7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+ML_LOG_PATH = os.getenv("ML_LOG_PATH", "/home/pi/logs/cron_ml.log")
+
+@app.route("/api/ml/log")
+def api_ml_log():
+    """Return the last N lines of cron_ml.log as a JSON list of strings."""
+    try:
+        n = int(request.args.get("lines", 100))
+        n = max(10, min(n, 1000))   # clamp to 10–1000
+    except (ValueError, TypeError):
+        n = 100
+
+    if not os.path.exists(ML_LOG_PATH):
+        return jsonify({"lines": [], "total": 0,
+                        "error": f"Log not found: {ML_LOG_PATH}"})
+
+    with open(ML_LOG_PATH, "r", errors="replace") as fh:
+        all_lines = fh.readlines()
+
+    tail = [l.rstrip("\n") for l in all_lines[-n:]]
+    return jsonify({"lines": tail, "total": len(all_lines)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Startup
 # ─────────────────────────────────────────────────────────────────────────────
 

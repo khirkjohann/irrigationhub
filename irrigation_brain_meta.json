@@ -1,0 +1,20 @@
+{
+  "trained_at": "2026-04-14T05:06:53.776042",
+  "n_rows": 32,
+  "train_rmse": 2.271,
+  "test_rmse": null,
+  "feature_cols": [
+    "Temp",
+    "Humidity",
+    "Moisture_Deficit"
+  ],
+  "target_col": "Target_Volume",
+  "n_estimators": 100,
+  "max_depth": null,
+  "feature_importances": {
+    "Temp": 0.0273,
+    "Humidity": 0.0439,
+    "Moisture_Deficit": 0.9288
+  },
+  "model_path": "/home/pi/irrigation_brain.pkl"
+}
