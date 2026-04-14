@@ -1662,14 +1662,15 @@ def api_bootstrap_zone_info(zone_id: int):
         conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT target_moisture FROM zone_profile WHERE zone_id = ?",
+            "SELECT target_moisture, threshold_gap FROM zone_profile WHERE zone_id = ?",
             (zone_id,),
         ).fetchone()
         conn.close()
         target = float(row["target_moisture"]) if row and row["target_moisture"] is not None else None
+        gap    = float(row["threshold_gap"])    if row and row["threshold_gap"]    is not None else 5.0
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    return jsonify({"zone_id": zone_id, "target_moisture": target})
+    return jsonify({"zone_id": zone_id, "target_moisture": target, "threshold_gap": gap})
 
 
 @app.route("/api/bootstrap/start", methods=["POST"])
@@ -1715,8 +1716,10 @@ def api_bootstrap_start():
     except Exception:
         target = None
 
+    timer_minutes = max(1, min(60, int(data.get("timer_minutes", 10))))
+    wait_seconds  = timer_minutes * 60
     if zone_id not in (1, 2, 3, 4):
-        return jsonify({"error": "zone_id must be 1\u20134"}), 400
+        return jsonify({"error": "zone_id must be 1–4"}), 400
     if volume_applied < 0:
         return jsonify({"error": "volume_applied must be ≥ 0"}), 400
 
@@ -1748,7 +1751,7 @@ def api_bootstrap_start():
             "humidity":         humidity,
             "volume_applied":   volume_applied,
             "start_ts":         _time_mod.time(),
-            "wait_seconds":     600,
+            "wait_seconds":     wait_seconds,
             "phase":            "waiting",
         })
 
@@ -1762,7 +1765,7 @@ def api_bootstrap_start():
         "temp":             temp,
         "humidity":         humidity,
         "volume_applied":   volume_applied,
-        "wait_seconds":     600,
+        "wait_seconds":     wait_seconds,
         "sensor_source":    sensor_source,
     })
 
@@ -1823,7 +1826,7 @@ def api_bootstrap_finalise():
         return jsonify({"error": "post_moisture must be 0–100 %"}), 400
 
     moisture_shift   = post_moisture - sess["initial_moisture"]
-    moisture_deficit = max(0.0, moisture_shift)   # what the water corrected
+    moisture_deficit  = max(0.0, moisture_shift)   # actual moisture absorbed — physical truth for RF training
 
     _append_training_row(
         zone_id          = sess["zone_id"],
@@ -1867,6 +1870,100 @@ def api_bootstrap_cancel():
         })
     print("[BOOTSTRAP] Session cancelled.")
     return jsonify({"cancelled": was_active})
+
+
+@app.route("/api/bootstrap/csv-preview")
+def api_bootstrap_csv_preview():
+    """Return the last 10 training rows as JSON for the UI table."""
+    if not os.path.exists(ML_TRAINING_CSV):
+        return jsonify({"rows": [], "total": 0})
+    try:
+        with open(ML_TRAINING_CSV, newline="") as fh:
+            all_rows = list(_csv_mod.DictReader(fh))
+        total  = len(all_rows)
+        last10 = all_rows[-10:]
+        offset = total - len(last10)
+        rows   = []
+        for i, r in enumerate(last10):
+            rows.append({
+                "line":             offset + i + 2,  # 1-indexed; +1 for header, +1 for 1-base
+                "timestamp":        r.get("Timestamp", "—"),
+                "zone_id":          r.get("Zone_ID", "—"),
+                "temp":             r.get("Temp", "—"),
+                "humidity":         r.get("Humidity", "—"),
+                "initial_moisture": r.get("Initial_Moisture", "—"),
+                "moisture_deficit": r.get("Moisture_Deficit", "—"),
+                "target_volume":    r.get("Target_Volume", "—"),
+            })
+        return jsonify({"rows": rows, "total": total})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/bootstrap/delete-row", methods=["POST"])
+def api_bootstrap_delete_row():
+    """Delete a training row by 1-based CSV line number (line 1 = header)."""
+    data = request.get_json(force=True) or {}
+    try:
+        line_num = int(data["line"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "line is required"}), 400
+    if not os.path.exists(ML_TRAINING_CSV):
+        return jsonify({"error": "CSV not found"}), 404
+    try:
+        with open(ML_TRAINING_CSV, newline="") as fh:
+            all_lines = fh.readlines()
+        if line_num < 2 or line_num > len(all_lines):
+            return jsonify({"error": f"Invalid line {line_num} (file has {len(all_lines)} lines)"}), 400
+        del all_lines[line_num - 1]
+        with open(ML_TRAINING_CSV, "w") as fh:
+            fh.writelines(all_lines)
+        return jsonify({"success": True, "csv_rows": max(0, len(all_lines) - 1)})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/bootstrap/manual-add", methods=["POST"])
+def api_bootstrap_manual_add():
+    """Add a training row directly without running the timer workflow."""
+    data = request.get_json(force=True) or {}
+    try:
+        zone_id          = int(data["zone_id"])
+        temp             = float(data["temp"])
+        humidity         = float(data["humidity"])
+        initial_moisture = float(data["initial_moisture"])
+        post_moisture    = float(data["post_moisture"])
+        volume_applied   = float(data["volume_applied"])
+    except (KeyError, ValueError, TypeError) as exc:
+        return jsonify({"error": f"Missing or invalid field: {exc}"}), 400
+    if zone_id not in (1, 2, 3, 4):
+        return jsonify({"error": "zone_id must be 1–4"}), 400
+    try:
+        conn = sqlite3.connect(MAIN_DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT target_moisture FROM zone_profile WHERE zone_id = ?", (zone_id,)
+        ).fetchone()
+        conn.close()
+        target = float(row["target_moisture"]) if row and row["target_moisture"] is not None else None
+    except Exception:
+        target = None
+    # Post - Initial = actual moisture rise (physical exchange rate for RF training).
+    # At inference, Target - Initial is fed into the same slot — both are commensurable
+    # % moisture changes, so the model interpolates correctly.
+    moisture_deficit = max(0.0, post_moisture - initial_moisture)
+    _append_training_row(
+        zone_id=zone_id, target_moisture=target or 0.0,
+        initial_moisture=initial_moisture, temp=temp, humidity=humidity,
+        moisture_deficit=moisture_deficit, target_volume=volume_applied,
+    )
+    csv_rows = _count_csv_rows()
+    return jsonify({
+        "success":          True,
+        "csv_rows":         csv_rows,
+        "moisture_deficit": round(moisture_deficit, 4),
+        "moisture_shift":   round(post_moisture - initial_moisture, 2),
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -187,7 +187,7 @@ def retrain():
     train_rmse   = _rmse(y_train.tolist(), train_preds)
     _log(f"  Train RMSE : {train_rmse:.4f} L")
 
-    if X_test is not None:
+    if X_test is not None and y_test is not None:
         test_preds = model.predict(X_test).tolist()
         test_rmse  = _rmse(y_test.tolist(), test_preds)
         _log(f"  Test  RMSE : {test_rmse:.4f} L")
